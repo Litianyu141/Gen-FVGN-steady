@@ -108,7 +108,7 @@ def decompose_and_trans_node_attr_to_cell_attr_graph(
         None,
     )
 
-    for key in graph.keys:
+    for key in graph.keys():
         if key == "x":
             x = graph.x  # avoid exception
         elif key == "edge_index":

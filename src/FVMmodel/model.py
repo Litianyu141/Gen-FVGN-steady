@@ -1275,7 +1275,7 @@ class Intergrator(nn.Module):
         mask_x = (indegree_cell_x == outdegree_cell_x).view(-1)
         mask_interior = torch.logical_not(mask_x)
 
-        # if not "B_cell_to_cell_x" in graph_cell_x.keys:
+        # if not "B_cell_to_cell_x" in graph_cell_x.keys():
         if True:
             out_centroid_x = graph_cell.pos[outdegree_cell_x].clone()
             in_centroid_x = graph_cell.pos[indegree_cell_x].clone()
@@ -1498,7 +1498,7 @@ class Intergrator(nn.Module):
         if node_contribu:
             outdegree_node_index = torch.cat((face_node[0], face_node[1]), dim=0)
             indegree_node_index = torch.cat((face_node[1], face_node[0]), dim=0)
-            if not "B_node_to_node" in graph_node.keys:
+            if not "B_node_to_node" in graph_node.keys():
 
                 mesh_pos_diff_on_edge = (
                     mesh_pos[outdegree_node_index] - mesh_pos[indegree_node_index]
@@ -1555,7 +1555,7 @@ class Intergrator(nn.Module):
         if node_x_contribu:
             outdegree_node_index_x = torch.cat((face_node_x[0], face_node_x[1]), dim=0)
             indegree_node_index_x = torch.cat((face_node_x[1], face_node_x[0]), dim=0)
-            if not "B_node_to_node_x" in graph_node_x.keys:
+            if not "B_node_to_node_x" in graph_node_x():
 
                 mesh_pos_diff_on_edge_x = (
                     mesh_pos[outdegree_node_index_x] - mesh_pos[indegree_node_index_x]
@@ -1612,7 +1612,7 @@ class Intergrator(nn.Module):
         """cell to node contribution"""
         if cell_to_node_contribu:
             
-            if not "B_cell_to_node" in graph_node_x.keys:
+            if not "B_cell_to_node" in graph_node_x.keys():
                 centriod_mesh_pos_diff = (
                     centroid[cells_index] - mesh_pos[cells_node]
                 ).unsqueeze(2)
@@ -1657,7 +1657,7 @@ class Intergrator(nn.Module):
         
         B_right = B_node_to_node+B_node_to_node_x+B_cell_to_node
                 
-        # if "R_inv_Q_t" in graph_node_x.keys:
+        # if "R_inv_Q_t" in graph_node_x.keys():
             
         #     R_inv_Q_t=graph_node_x.R_inv_Q_t
             
