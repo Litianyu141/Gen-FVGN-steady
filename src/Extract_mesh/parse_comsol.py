@@ -2349,7 +2349,7 @@ if __name__ == "__main__":
     # for debugging
 
     debug_file_path = None
-    # debug_file_path="/mnt/dataset/work2/Dataset-GEP-FVGN-steady-dual-egg/train_dataset/mesh_size=0.5.mphtxt"
+    # debug_file_path="/mnt/dataset/work2/Dataset-GEP-FVGN-steady-with-poly/train_dataset/mesh_size=0.5.mphtxt"
 
     if debug_file_path is None or len(debug_file_path) <= 0:
         debug_file_path = None
@@ -2377,10 +2377,10 @@ if __name__ == "__main__":
             "rho": None,
             "mu": None,
             "features": None,
-            "comsol_dataset_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-dual-egg/train_dataset/",
-            "h5_save_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-dual-egg/converted_dataset/h5/",
-            "tf_saving_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-dual-egg/converted_dataset/tf/",
-            "origin_saving_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-dual-egg/converted_dataset/origin/",
+            "comsol_dataset_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-with-poly/train_dataset/",
+            "h5_save_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-with-poly/converted_dataset/h5/",
+            "tf_saving_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-with-poly/converted_dataset/tf/",
+            "origin_saving_path": "/mnt/e/dataset/work2/Dataset-GEP-FVGN-steady-with-poly/converted_dataset/origin/",
             "flow_type": None,
             "mesh_only": True,
             "saving_tf": True,
@@ -2389,7 +2389,7 @@ if __name__ == "__main__":
             "saving_mesh": True,
             "saving_h5": True,
             "print_tf": False,
-            "plot": False,
+            "plot": True,
             "flow_type_mapping": flow_type_mapping,
         }
 
