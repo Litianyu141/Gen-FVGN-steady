@@ -16,6 +16,7 @@ The implementation code of this paper is available on GitHub
 - [ ] GreenGauss Gradient (node-based and cell-based)
 - [ ] Export to Tecplot dat file with surface zone
 - [ ] Check if all grids are usable
+- [ ] Fix LBFGS training bugs
 
 ## Table of Contents
 
