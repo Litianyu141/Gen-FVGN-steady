@@ -1,41 +1,159 @@
-# Gen-FVGN-steady
-A fully differentiable GNN-based PDE Solver: With Applications to Poisson and Navier-Stokes Equations[[Arxiv]](https://arxiv.org/abs/2405.04466)  
-(This repository is an earlier version developed internally and was developed in the Ubuntu 20.04 version of WSL.)
+# Generative Finite Volume Graph Network (Gen-FVGN)
+Partial differential equations (PDEs) play a crucial role in scientific computing. 
+Recent advancements in deep learning have led to the development of both data-driven and and Physics-Informed Neural Networks (PINNs) for efficiently solving PDEs, though challenges remain in data acquisition and generalization for both approaches.
+This paper presents a computational framework that combines the Finite Volume Method (FVM) with Graph Neural Networks (GNNs) to construct the PDE-loss, enabling direct parametric PDE solving during training without the need for precomputed data.
+By exploiting GNNs' flexibility on unstructured grids, 
+this framework extends its applicability across various geometries, physical equations and boundary conditions. 
+The core innovation lies in an unsupervised training algorithm that utilizes GPU parallel computing to create a fully differentiable finite volume discretization process, 
+such as gradient reconstruction and surface integration.
+Our results demonstrate that the trained GNN model can efficiently solve multiple PDEs with varying boundary conditions and source terms in a single training session, 
+with the number of iterations required to reach a steady-state solution being only 25\% of that required by traditional second-order CFD solvers.
+The implementation code of this paper is available on GitHub
 
-# Highlights
-This code could solve multiple unstructured grids, multiple boundary conditions, multiple source terms, multiple PDEs in A single model without pre-computed data!
+---
+# TODO List
 
-# Abstract
-In this study, we present a novel computational framework that integrates the finite volume method with graph neural networks to address the challenges in Physics-Informed Neural Networks(PINNs). Our approach leverages the flexibility of graph neural networks to adapt to various types of two-dimensional unstructured grids, enhancing the model's applicability across different physical equations and boundary conditions. The core innovation lies in the development of an unsupervised training algorithm that utilizes GPU parallel computing to implement a fully differentiable finite volume method discretization process. This method includes differentiable integral and gradient reconstruction algorithms, enabling the model to directly solve partial-differential equations(PDEs) during training without the need for pre-computed data. Our results demonstrate the model's superior mesh generalization and its capability to handle multiple boundary conditions simultaneously, significantly boosting its generalization capabilities. The proposed method not only shows potential for extensive applications in CFD but also establishes a new paradigm for integrating traditional numerical methods with deep learning technologies, offering a robust platform for solving complex physical problems.
+- [ ] GreenGauss Gradient (node-based and cell-based)
+- [ ] Export to Tecplot dat file with surface zone
+- [ ] Check if all grids are usable
 
-# Env
-We have directly provided a conda environment package that supports both FVGN and MGN simultaneously（download:[[BaiduNetdisk]](https://pan.baidu.com/s/1v8N8ZMlSDVReLM48-imglA?pwd=nn6q)）. All you need to do is download and unzip it to the "/path/miniconda3/envs/" directory (note that the new folder's name must be FVGN-pt2.1). Then, run the command
-~~~sh
-conda env list
-~~~
- to check if the environment has been successfully imported.
+## Table of Contents
 
-# Used grids
-1.convert comsol grids or tecplot grids to Gen-FVGN supported format(and you can generate you own new mesh)
-set dataset path at parse_comsol.py, then run
-~~~py
-python src/Extract_mesh/parse_comsol.py
-~~~
+- [Generative Finite Volume Graph Network (Gen-FVGN)](#generative-finite-volume-graph-network-gen-fvgn)
+- [TODO List](#todo-list)
+  - [Table of Contents](#table-of-contents)
+  - [Installation of the Code Environment](#installation-of-the-code-environment)
+  - [Code Directory and File Structure](#code-directory-and-file-structure)
+    - [Top-level Files](#top-level-files)
+    - [Example Code Files](#example-code-files)
+    - [Instructions for Using Mesh Files](#instructions-for-using-mesh-files)
+    - [Explanation of the BC.json File](#explanation-of-the-bcjson-file)
+  - [Explanation of Parameter Validity](#explanation-of-parameter-validity)
+  - [Common Issues](#common-issues)
+    - [Loss Calculation Produces NaN](#loss-calculation-produces-nan)
 
-2.set converted dataset/tf at src/run_train.sh, the run
-~~~sh
-sh src/run_train.sh
-~~~
-and you can set other params in run_train.sh.
-you can find more params instruction insrc/utils/get_param.py
+## Installation of the Code Environment
+**pytorch-2.3.0**
+```bash
+conda create -n FVGN-pt2.3 python==3.11 # Create a new conda environment and specify the Python version
+conda activate FVGN-pt2.3 # Activate the Python environment
+conda install pytorch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 pytorch-cuda=12.1 -c pytorch -c nvidia # Install the GPU-enabled PyTorch 2.3 version
+pip install scipy -i https://pypi.tuna.tsinghua.edu.cn/simple # Pre-install scipy to avoid potential conflicts later
+pip install torch_geometric -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install --no-index pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://pytorch-geometric.com/whl/torch-2.3.0+cu121.html
+pip install -r src/requirements.txt
+```
 
-# Notice
-If you are using the latest version vscode, we do not suggest use debuging mode to run src/Extract_mesh/parse_comsol.py. If you are trying to debug it, you have to decomment specific lines in src/Extract_mesh/parse_comsol.py. And make sure you activated conda env in the terminal!!!!!. Latest vscode allows you run specific conda env without activation, and it will cause exception in src/Extract_mesh/parse_comsol.py!
+**pytorch-2.5.1**
+```bash
+conda create -n FVGN-pt2.5 python==3.11 # Create a new conda environment and specify the Python version
+conda activate FVGN-pt2.5 # Activate the Python environment
+conda install pytorch torchvision torchaudio pytorch-cuda=12.4 -c pytorch -c nvidia # Install the GPU-enabled PyTorch 2.5.1 version
+pip install scipy -i https://pypi.tuna.tsinghua.edu.cn/simple # Pre-install scipy to avoid potential conflicts later
+pip install sympy==1.13.1 -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install torch_geometric -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install --no-index pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://pytorch-geometric.com/whl/torch-2.5.1+cu124.html
+pip install -r src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+```
 
-This code supports the .mphtxt meshes generated by COMSOL and the 2D polygonal meshes exported from Tecplot. We provide sample meshes [[BaiduNetdisk]](https://pan.baidu.com/s/1FkgfDvdmCzdXGAdLAxJqDg?pwd=99tc). You just need to place the path of the generated mesh into the `parse_comsol.py` file and run this file to convert the aforementioned meshes into the data format supported by Gen-FVGN.
+## Code Directory and File Structure
 
-# Usage Method
-The specific usage instructions for this repository are currently being prepared. All algorithms related to FVM are contained within the Integrator class in the model.py file.
+- **datasets/**: Stores the mesh files to be solved (this folder is included in `.gitignore`), so your local mesh files placed here will not be synced by git. Create it if it does not exist.
+- **mesh_example/**: Contains example mesh files to be solved (not included in `.gitignore`).
+- **Logger/**: Used to record files generated during training, such as model states and training solutions.
+- **Ref_code/**: Storage location for reference code or dependent code snippets; it may include additional files or modules.
+- **src/**: The core source code directory of the project, including model implementations and training scripts.
 
-# License
-Feel free to clone this repository and modify it! If it's of good use for you, give it a star and please cite our publications!
+### Top-level Files
+
+- **.gitignore**: Lists files and folders to be ignored by Git, preventing unnecessary files from being committed to the repository.
+- **env_install_commands.txt**: Records the commands and dependencies required for environment setup. If you are running the repository's code for the first time, refer to this file for conda environment installation.
+- **LICENSE**: The project's license agreement, describing the copyright and usage restrictions.
+- **pyrightconfig.json**: Configures settings for Pyright (a TypeScript type checker) to disable Pylance’s type checking and static analysis.
+- **README.md**: The repository’s documentation, including a project overview, installation guide, and usage instructions.
+
+### Example Code Files
+
+- **src/train.py**: Pool Training. This script loads a number of meshes defined by `dataset_size` in `src/Utils/get_param.py` for solving, and returns data to the CPU after each forward pass.
+- **src/train_all_GPU.py**: All-on-GPU training. It loads `params.batch_size` meshes onto the GPU for solving in one go, without transferring them back to the CPU.
+- **src/grad_test.py**: Contains code for gradient reconstruction testing using the Euler Scalar function. A key parameter is `params.order`, which determines the order of accuracy for WLSQ gradient reconstruction.
+---
+
+### Instructions for Using Mesh Files
+Example mesh files are located in the `mesh_example\` directory. You can transfer them to the `datasets\` folder (create it if it does not exist) or leave them in place. The specific mesh path is configured in `src/Utils/get_param.py`.
+
+(If you want to solve for other Reynolds numbers, you can copy the folder containing the mesh and modify the parameter range in `BC.json`.
+)
+
+***Note: Please verify that your mesh folder contains an `.h5` file. If not, you must specify the mesh path in the `src/Extract_mesh/parse_comsol.py` file, then run the script to convert the file to the `.h5` format. Only `.h5` files are recognized by Gen-FVGN.***
+
+Typically, mesh files are stored in a folder path such as `datasets/lid_driven/lid_driven_cavity_81x81`, where `lid_driven_cavity_81x81` is a user-defined mesh name:
+```
+--- lid_driven_cavity_81x81\
+    -- BC.json # This is the boundary condition settings file. Please refer to the next section for details.
+    -- mesh.mphtxt # This is the mesh file exported from COMSOL.
+```
+
+### Explanation of the BC.json File
+This file defines which boundaries in the mesh are subject to boundary conditions, the parameter ranges for solving, the stencil settings used for WLSQ reconstruction, and other related parameters.
+
+**Terminology:**
+`Geo ID`: Refers to the identifier set in COMSOL. For example, in the image below, the red-circled area indicates the Geo ID. You can also click the green button in the image to directly copy the `Geo ID`.
+<p align="center"><p align="left">
+  <img src="src_README/image.png" alt="Image description" width="720"/>
+</p>
+
+```json
+{
+    "inflow": [3, 4], // Represents the `Geo ID` for the velocity inlet boundary.
+    "wall": [1, 2, 5, "7-10"], // Represents the `Geo IDs` for the wall boundaries.
+    "outflow": null, // Represents the `Geo ID` for the outlet boundary; set to null if not applicable.
+    "pressure_point": [3], // The Geo ID for the pressure constraint point, typically used in lid-driven flow cases.
+    "surf": null, // The `Geo ID` for the obstacle surface.
+    "stencil|BC_extra_points": 4, // The additional number of interior domain points to be selected for the WLSQ reconstruction stencil at all boundary points.
+    "stencil|khops": 1, // The k-hop neighbors used for the WLSQ reconstruction stencil for all points.
+    "theta_PDE": {
+        "unsteady": 0, // Whether to enable unsteady solving; 1 for enabled, 0 for disabled.
+        "inlet": [1, 1, 1], // The range for inlet boundary conditions: [start, step, end].
+        "rho": [1, 1, 1],
+        "mu": [0.01, 0.01, 0.01],
+        "source": [0, 0, 0],
+        "aoa": [0, 0, 0],
+        "dt": 0.005,
+        "L": 1, // Manually specify the characteristic length of the current mesh; this scale is determined during mesh creation.
+        "source_frequency": [1, 1, 10], // Vibration frequency of the point source in the wave equation.
+        "source_strength": [1, 1, 10], // Strength of the point source in the wave equation.
+        "Re_max": 10000, // The maximum valid Reynolds number for the current case, mainly used to constrain the inlet's parametric solving range.
+        "Re_min": 100
+    },
+    "sigma": [1, 1, 1], // Controls the output channels of the neural network. For example, when solving the Poisson equation, if only the scalar u is required, set to [1, 0, 0]. Otherwise, use [1, 1, 1] to retain three output channels.
+    "inlet_type": null, // The type of velocity profile at the inlet, e.g., 'uniform', 'uniform_aoa', or 'parabolic'.
+    "init_field_type": null // The type of initial field: [x, x, x] to directly specify uniform values for u, v, p; 'data.vtu' or 'data.h5' to provide initial field files; 'uniform' for uniform initialization using boundary conditions; 'parabolic' for parabolic initialization using boundary conditions.
+}
+```
+
+---
+
+## Explanation of Parameter Validity
+**(i.e., how to correctly configure the `solving_params` content in BC.json)**
+
+Verify that the parameter configuration in `solving_params` is reasonable. There are three cases:
+
+1. **For the Navier–Stokes (NS) Equation:**
+   - **Required (must be > 0):** `continuity`, `convection`, `grad_p`, `inlet`, `rho`, `mu`, `dt`, `L`, `Re_min`, `Re_max`
+   - **Optional (can be 0 or > 0):** `unsteady`, `aoa`, `source`
+   - **Must be 0:** `source_frequency`, `source_strength`
+
+2. **For the Poisson Equation:**
+   - **Required (must be > 0):** `mu`, `Re_max`, `Re_min`
+   - **Must be 0:** `continuity`, `convection`, `grad_p`, `rho`, `source_frequency`
+   - **Optional:** Other parameters
+
+3. **For the Wave Equation:**
+   - **Required (must be > 0):** `continuity`, `grad_p`, `rho`, `source_frequency`, `source_strength`
+   - **Must be 0:** `convection`, `mu`, `source`
+   - **Optional:** Other parameters
+
+## Common Issues
+### Loss Calculation Produces NaN
+Please check if the `norm_global` parameter is enabled in `src/Utils/get_params.py`. If it is enabled, ensure that at least one of the parameters in `PDE_theta` within the BC.json file of your datasets has a valid range (i.e., the start, step, and stop values are not all identical). When `norm_global` is enabled, normalization is applied to `PDE_theta`, and if all values are identical, it may lead to division overflow or result in an extremely large number.

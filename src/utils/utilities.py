@@ -4,49 +4,13 @@ import enum
 import torch
 from torch_scatter import scatter
 
-flow_type_mapping = {
-    "1": "pipe_flow",
-    "2": "farfield-circular",
-    "3": "cavity_flow",
-    "4": "farfield-square",
-    "5": "farfield-half-circular-square",
-    "6": "circular-possion",
-    "7": "cavity_wave",
-}
-
-
 class NodeType(enum.IntEnum):
     NORMAL = 0
-    OBSTACLE = 1
-    AIRFOIL = 2
-    HANDLE = 3
-    INFLOW = 4
-    OUTFLOW = 5
-    WALL_BOUNDARY = 6
-    SIZE = 9
-    BOUNDARY_CELL = 10
-    IN_WALL = 11
-    OUT_WALL = 12
-    GHOST_INFLOW = 13
-    GHOST_OUTFLOW = 14
-    GHOST_WALL = 15
-    GHOST_AIRFOIL = 16
-
-
-def calculate_diffusion_term(graph):
-    pass
-
-
-def caculate_advection_term(graph):
-    pass
-
-
-def caculate_velocity(graph):
-    pass
-
-
-def caculate_pressure(graph):
-    pass
+    INFLOW = 1
+    OUTFLOW = 2
+    WALL_BOUNDARY = 3
+    PRESS_POINT = 4
+    IN_WALL = 5
 
 
 def calc_cell_centered_with_node_attr(
@@ -163,242 +127,133 @@ def shuffle_np(array):
     return array_t
 
 
-def extract_cylinder_boundary_mask(
-    graph_node: Data, graph_edge: Data, graph_cell: Data
+def generate_boundary_zone(
+    dataset=None, surf_mask=None, rho=None, mu=None, dt=None
 ):
-    face_node = graph_node.edge_index
-    node_type = graph_node.node_type
-    mesh_pos = graph_node.pos
-
-    node_topwall = torch.max(mesh_pos[:, 1])
-    node_bottomwall = torch.min(mesh_pos[:, 1])
-    node_outlet = torch.max(mesh_pos[:, 0])
-    node_inlet = torch.min(mesh_pos[:, 0])
-
-    face_type = graph_edge.x[:, 0:1]
-    left_face_node_pos = torch.index_select(mesh_pos, 0, face_node[0])
-    right_face_node_pos = torch.index_select(mesh_pos, 0, face_node[1])
-
-    left_face_node_type = torch.index_select(node_type, 0, face_node[0])
-    right_face_node_type = torch.index_select(node_type, 0, face_node[1])
-
-    face_center_pos = (left_face_node_pos + right_face_node_pos) / 2.0
-
-    face_topwall = torch.max(face_center_pos[:, 1])
-    face_bottomwall = torch.min(face_center_pos[:, 1])
-    face_outlet = torch.max(face_center_pos[:, 0])
-    face_inlet = torch.min(face_center_pos[:, 0])
-
-    MasknodeT = torch.full((mesh_pos.shape[0], 1), True).cuda()
-    MasknodeF = torch.logical_not(MasknodeT).cuda()
-
-    MaskfaceT = torch.full((face_node.shape[1], 1), True).cuda()
-    MaskfaceF = torch.logical_not(MaskfaceT).cuda()
-
-    cylinder_node_mask = torch.where(
-        (
-            (node_type == NodeType.WALL_BOUNDARY)
-            & (mesh_pos[:, 1:2] < node_topwall)
-            & (mesh_pos[:, 1:2] > node_bottomwall)
-            & (mesh_pos[:, 0:1] > node_inlet)
-            & (mesh_pos[:, 0:1] < node_outlet)
-        ),
-        MasknodeT,
-        MasknodeF,
-    ).squeeze(1)
-
-    cylinder_face_mask = torch.where(
-        (
-            (face_type == NodeType.WALL_BOUNDARY)
-            & (face_center_pos[:, 1:2] < face_topwall)
-            & (face_center_pos[:, 1:2] > face_bottomwall)
-            & (face_center_pos[:, 0:1] > face_inlet)
-            & (face_center_pos[:, 0:1] < face_outlet)
-            & (left_face_node_pos[:, 1:2] < node_topwall)
-            & (left_face_node_pos[:, 1:2] > node_bottomwall)
-            & (left_face_node_pos[:, 0:1] > node_inlet)
-            & (left_face_node_pos[:, 0:1] < node_outlet)
-            & (right_face_node_pos[:, 1:2] < node_topwall)
-            & (right_face_node_pos[:, 1:2] > node_bottomwall)
-            & (right_face_node_pos[:, 0:1] > node_inlet)
-            & (right_face_node_pos[:, 0:1] < node_outlet)
-            & (left_face_node_type == NodeType.WALL_BOUNDARY)
-            & (right_face_node_type == NodeType.WALL_BOUNDARY)
-        ),
-        MaskfaceT,
-        MaskfaceF,
-    ).squeeze(1)
-
-    # plt.scatter(face_center_pos[cylinder_face_mask].cpu().numpy()[:,0],face_center_pos[cylinder_face_mask].cpu().numpy()[:,1],edgecolors='red')
-    # plt.show()
-    return cylinder_node_mask, cylinder_face_mask
-
-
-def extract_cylinder_boundary(
-    dataset,
-    mask_node_boundary,
-    mask_face_boundary,
-    graph_node: Data,
-    graph_edge: Data,
-    graph_cell: Data,
-    rho=None,
-    mu=None,
-    dt=None,
-):
-    write_zone = {"name": "OBSTACLE", "rho": rho, "mu": mu, "dt": dt}
-
-    write_zone["node|X"] = (
-        graph_node.pos[mask_node_boundary, 0:1].to("cpu").unsqueeze(0).numpy()
-    )
-    write_zone["node|Y"] = (
-        graph_node.pos[mask_node_boundary, 1:2].to("cpu").unsqueeze(0).numpy()
-    )
-    write_zone["node|U"] = (
-        dataset["predicted_node_uvp"][:, mask_node_boundary, 0:1].to("cpu").numpy()
-    )
-    write_zone["node|V"] = (
-        dataset["predicted_node_uvp"][:, mask_node_boundary, 1:2].to("cpu").numpy()
-    )
-    write_zone["node|P"] = (
-        dataset["predicted_node_uvp"][:, mask_node_boundary, 2:3].to("cpu").numpy()
-    )
-    # write_zone["face"] = graph_node.edge_index[:,mask_face_boundary].to('cpu').transpose(0,1).unsqueeze(0).numpy()
-
-    origin_mesh_pos = graph_node.pos.to("cpu")
-
-    boundary_mesh_pos = graph_node.pos[mask_node_boundary, :].to("cpu")
-
-    index_mapping = {
-        str(bondary_vertex_pos.view(-1).numpy()): new_index
-        for new_index, bondary_vertex_pos in enumerate(boundary_mesh_pos)
-    }
-
-    boundary_face_unordered = (
-        graph_node.edge_index[:, mask_face_boundary].to("cpu").view(-1, 1)
-    )
-
-    boundary_face_mapped = torch.tensor(
-        [
-            index_mapping[str(origin_mesh_pos[idx].view(-1).numpy())]
-            for idx in boundary_face_unordered
-        ],
-        dtype=torch.long,
-    )
-
-    write_zone["face"] = (
-        torch.stack(torch.chunk(boundary_face_mapped, 2), dim=1).unsqueeze(0).numpy()
-    )
-
-    return write_zone
-
-
-def extract_cylinder_boundary_only_training(
-    dataset=None, params=None, rho=None, mu=None, dt=None
-):
-    face_node = dataset["face"][0].long()
+    face_node = dataset["face|face_node"].long()
     if face_node.shape[0] > face_node.shape[1]:
-        face_node = face_node.T
+        face_node = face_node.mT
 
-    node_type = dataset["node_type"][0]
-    mesh_pos = dataset["mesh_pos"][0]
-
-    # centroid = dataset["centroid"][0]
-    cells_face = dataset["cells_face"][0]
-    if cells_face.shape[0] > cells_face.shape[1]:
-        cells_face = cells_face.T
-
-    cells_node = dataset["cells_node"][0]
-    if cells_node.shape[0] > cells_node.shape[1]:
-        cells_node = cells_node.T
-
-    node_topwall = torch.max(mesh_pos[:, 1])
-    node_bottomwall = torch.min(mesh_pos[:, 1])
-    node_outlet = torch.max(mesh_pos[:, 0])
-    node_inlet = torch.min(mesh_pos[:, 0])
-
-    face_type = dataset["face_type"][0]
-    left_face_node_pos = torch.index_select(mesh_pos, 0, face_node[0])
-    right_face_node_pos = torch.index_select(mesh_pos, 0, face_node[1])
-
-    left_face_node_type = torch.index_select(node_type, 0, face_node[0])
-    right_face_node_type = torch.index_select(node_type, 0, face_node[1])
-
-    face_center_pos = (left_face_node_pos + right_face_node_pos) / 2.0
-
-    face_topwall = torch.max(face_center_pos[:, 1])
-    face_bottomwall = torch.min(face_center_pos[:, 1])
-    face_outlet = torch.max(face_center_pos[:, 0])
-    face_inlet = torch.min(face_center_pos[:, 0])
-
-    MasknodeT = torch.full((mesh_pos.shape[0], 1), True)
-    MasknodeF = torch.logical_not(MasknodeT)
-
-    MaskfaceT = torch.full((face_node.shape[1], 1), True)
-    MaskfaceF = torch.logical_not(MaskfaceT)
-
-    mask_node_boundary = torch.where(
-        (
-            (node_type == NodeType.WALL_BOUNDARY)
-            & (mesh_pos[:, 1:2] < node_topwall)
-            & (mesh_pos[:, 1:2] > node_bottomwall)
-            & (mesh_pos[:, 0:1] > node_inlet)
-            & (mesh_pos[:, 0:1] < node_outlet)
-        ),
-        MasknodeT,
-        MasknodeF,
-    ).squeeze(1)
-
-    mask_face_boundary = torch.where(
-        (
-            (face_type == NodeType.WALL_BOUNDARY)
-            & (face_center_pos[:, 1:2] < face_topwall)
-            & (face_center_pos[:, 1:2] > face_bottomwall)
-            & (face_center_pos[:, 0:1] > face_inlet)
-            & (face_center_pos[:, 0:1] < face_outlet)
-            & (left_face_node_pos[:, 1:2] < node_topwall)
-            & (left_face_node_pos[:, 1:2] > node_bottomwall)
-            & (left_face_node_pos[:, 0:1] > node_inlet)
-            & (left_face_node_pos[:, 0:1] < node_outlet)
-            & (right_face_node_pos[:, 1:2] < node_topwall)
-            & (right_face_node_pos[:, 1:2] > node_bottomwall)
-            & (right_face_node_pos[:, 0:1] > node_inlet)
-            & (right_face_node_pos[:, 0:1] < node_outlet)
-            & (left_face_node_type == NodeType.WALL_BOUNDARY)
-            & (right_face_node_type == NodeType.WALL_BOUNDARY)
-        ),
-        MaskfaceT,
-        MaskfaceF,
-    ).squeeze(1)
-
+    mesh_pos = dataset["node|pos"].to(torch.float32)
+    
+    surf_face_index,surf_face_mask = filter_adj(
+        face_node.numpy(), 
+        perm=torch.arange(mesh_pos.shape[0]).numpy(), 
+        num_nodes=mesh_pos.shape[0]
+    )
+    surf_face_index = torch.from_numpy(surf_face_index)
+    surf_face_mask = torch.from_numpy(surf_face_mask)
+    
     boundary_zone = {"name": "OBSTACLE", "rho": rho, "mu": mu, "dt": dt}
-
-    boundary_zone["mask_node_boundary"] = mask_node_boundary
-    boundary_zone["mask_face_boundary"] = mask_face_boundary
-    # boundary_zone["mask_cell_boundary"] = mask_cell_boundary
-
-    origin_mesh_pos = mesh_pos
-
-    boundary_mesh_pos = mesh_pos[mask_node_boundary, :]
-
-    index_mapping = {
-        str(bondary_vertex_pos.view(-1).numpy()): new_index
-        for new_index, bondary_vertex_pos in enumerate(boundary_mesh_pos)
-    }
-
-    boundary_face_unordered = face_node[:, mask_face_boundary].view(-1, 1)
-
-    boundary_face_mapped = torch.tensor(
-        [
-            index_mapping[str(origin_mesh_pos[idx].view(-1).numpy())]
-            for idx in boundary_face_unordered
-        ],
-        dtype=torch.long,
-    )
-
-    boundary_zone["face"] = (
-        torch.stack(torch.chunk(boundary_face_mapped, 2), dim=1).unsqueeze(0).numpy()
-    )
-    boundary_zone["mesh_pos"] = boundary_mesh_pos.unsqueeze(0).numpy()
     boundary_zone["zonename"] = "OBSTICALE_BOUNDARY"
+    
+    boundary_zone["node|surf_mask"] = surf_mask
+    boundary_zone["face|surf_face_mask"] = surf_face_mask
+    
+    boundary_zone["face|face_node"] = surf_face_index
+    boundary_zone["node|mesh_pos"] = mesh_pos[surf_mask]
 
     return boundary_zone
+
+
+def filter_adj(edge_index, perm, num_nodes):
+    # 初始化 mask 数组，默认值为 -1
+    mask = np.full((num_nodes,), -1, dtype=int)
+    
+    # 根据 perm 更新 mask 的有效位置
+    mask[perm] = np.arange(perm.size)
+    
+    # 提取 row 和 col
+    row, col = edge_index[0], edge_index[1]
+    
+    # 更新 row 和 col 的索引，使用 mask 过滤无效节点
+    row, col = mask[row], mask[col]
+    
+    # 创建一个布尔掩码来筛选有效边（row 和 col >= 0）
+    valid_mask = (row >= 0) & (col >= 0)
+    row, col = row[valid_mask], col[valid_mask]
+
+    # 将 row 和 col 堆叠为一个 (2, N) 形状的数组
+    return np.stack([row, col], axis=0), valid_mask
+
+# Scalar Eular solution
+def Scalar_Eular_solution(
+    mesh_pos, phi_0, phi_x, phi_y, phi_xy, alpha_x, alpha_y, alpha_xy, L, device="cpu"
+):
+    """
+    使用PyTorch计算给定网格点上的φ值及其一阶导数和二阶导数（Hessian矩阵）。
+
+    参数:
+    mesh_pos: 一个形状为(100, 2)的张量，表示100个网格点的x和y坐标。
+    phi_0, phi_x, phi_y, phi_xy: 公式中的系数。
+    alpha_x, alpha_y, alpha_xy: 公式中的alpha参数。
+    L: 域的长度。
+
+    返回:
+    phi_values: 一个张量，包含每个网格点上的φ值，形状为(N, 1)。
+    nabla_phi: 一个张量，包含每个网格点上的φ对x和y的一阶导数，形状为(N, 2)。
+    hessian_phi: 一个张量，包含每个网格点上的φ对x和y的二阶导数（Hessian矩阵），形状为(N, 2, 2)。
+    """
+    # 检查输入参数类型
+    if not isinstance(mesh_pos, torch.Tensor):
+        raise TypeError("mesh_pos must be a torch.Tensor")
+    if not mesh_pos.dtype == torch.float32:
+        raise TypeError("mesh_pos must be of type torch.float32")
+
+    # 确保 mesh_pos 需要计算梯度
+    node_pos = mesh_pos.clone().to(device)
+    node_pos.requires_grad_(True)
+
+    # 提取 x 和 y 坐标
+    x = node_pos[:, 0]
+    y = node_pos[:, 1]
+
+    # 计算 φ 值
+    phi_values = (
+        phi_0
+        + phi_x * torch.sin(alpha_x * np.pi * x / L)
+        + phi_y * torch.sin(alpha_y * np.pi * y / L)
+        + phi_xy * torch.cos(alpha_xy * np.pi * x * y / L**2)
+    )
+
+    # 计算 φ 对 x 和 y 的一阶导数
+    dphi_dx = torch.autograd.grad(
+        phi_values, x, grad_outputs=torch.ones_like(phi_values), create_graph=True
+    )[0]
+    dphi_dy = torch.autograd.grad(
+        phi_values, y, grad_outputs=torch.ones_like(phi_values), create_graph=True
+    )[0]
+
+    # 将一阶导数合并为 nabla_phi 张量
+    nabla_phi = torch.stack([dphi_dx, dphi_dy], dim=1)
+
+    # 计算 φ 对 x 的二阶导数（即 Hessian 矩阵的 [0, 0] 分量）
+    d2phi_dx2 = torch.autograd.grad(
+        dphi_dx, x, grad_outputs=torch.ones_like(dphi_dx), create_graph=True
+    )[0]
+
+    # 计算 φ 对 y 的二阶导数（即 Hessian 矩阵的 [1, 1] 分量）
+    d2phi_dy2 = torch.autograd.grad(
+        dphi_dy, y, grad_outputs=torch.ones_like(dphi_dy), create_graph=True
+    )[0]
+
+    # 计算 φ 对 x 和 y 的混合二阶导数（即 Hessian 矩阵的 [0, 1] 和 [1, 0] 分量）
+    d2phi_dxdy = torch.autograd.grad(
+        dphi_dx, y, grad_outputs=torch.ones_like(dphi_dx), create_graph=True
+    )[0]
+
+    d2phi_dydx = torch.autograd.grad(
+        dphi_dy, x, grad_outputs=torch.ones_like(dphi_dy), create_graph=True
+    )[0]
+
+    # 组装 Hessian 矩阵
+    hessian_phi = torch.stack(
+        [
+            torch.stack([d2phi_dx2, d2phi_dxdy], dim=1),
+            torch.stack([d2phi_dydx, d2phi_dy2], dim=1),
+        ],
+        dim=1,
+    )
+
+    # 返回 φ, nabla_phi 和 hessian_phi
+    return phi_values.view(-1, 1).detach(), nabla_phi.detach(), hessian_phi.detach()

@@ -1,21 +1,19 @@
 import os
 import time
 import torch
+import numpy as np
 import datetime as dt
 from torch.utils.tensorboard import SummaryWriter
-
-# import matplotlib
-# matplotlib.use('agg')
-# matplotlib.rcParams['agg.path.chunksize'] = 10000
-# import matplotlib.pyplot as plt
-# import numpy as np
 from statsmodels.nonparametric.smoothers_lowess import lowess
+from Post_process import to_vtk
+import csv
 
 # import warnings
 from natsort import natsorted
 import pickle
 import json
 import shutil
+import fnmatch
 
 
 # import utilities
@@ -23,13 +21,14 @@ class Logger:
     def __init__(
         self,
         name,
+        head="Logger",
         datetime=None,
         use_csv=False,
-        use_tensorboard=True,
+        use_tensorboard=False,
         params=None,
-        git_info=None,
         saving_path=None,
-        copy_code=True,
+        copy_code=False,
+        seed=None,
     ):
         """
         Logger logs metrics to CSV files / tensorboard
@@ -38,77 +37,114 @@ class Logger:
         :use_csv: log output to csv files (needed for plotting)
         :use_tensorboard: log output to tensorboard
         """
+        self.head = head
         self.name = name
         self.params = params
+        self.log_item = {}
+
         if datetime:
             self.datetime = datetime
         else:
-            self.datetime = dt.datetime.now().strftime("%Y-%m-%d-%H:%M:%S")
+            self.datetime = dt.datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+
         if saving_path is not None:
             self.saving_path = saving_path
         else:
-            self.saving_path = os.getcwd() + f"/Logger/{name}/{self.datetime}"
+            self.saving_path = os.getcwd() + f"/{head}/{name}/{self.datetime}"
+
+        if seed is not None:
+            os.makedirs(f"{self.saving_path}/seed_{seed}", exist_ok=True)
 
         source_valid_file_path = os.path.split(os.path.split(__file__)[0])[0]
         target_valid_file_path = f"{self.saving_path}/source"
-
+        
         if copy_code:
             os.makedirs(f"{self.saving_path}/source", exist_ok=True)
-            shutil.copytree(
-                source_valid_file_path,
-                target_valid_file_path,
-                ignore=self.ignore_files_and_folders,
-                dirs_exist_ok=True,
+            whitelist = [
+                "*.py",
+                "*.txt",
+                "*.ipynb",
+                "BC_encoder",
+                "Extract_mesh",
+                "FVMmodel",
+                "Load_mesh",
+                "Utils",
+                "Post_process",
+            ]
+            self.copy_code_and_folders(
+                source_valid_file_path, target_valid_file_path, whitelist
             )
 
-        self.target_valid_file_path = target_valid_file_path + "/validate.py"
         self.use_tensorboard = use_tensorboard
 
         self.use_csv = use_csv
         if use_csv:
-            os.makedirs("Logger/{}/{}/logs".format(name, self.datetime), exist_ok=True)
-            os.makedirs("Logger/{}/{}/plots".format(name, self.datetime), exist_ok=True)
+            self.csv_file_path = f"{self.saving_path}/Loss_monitor.dat"
+            self.headers = ["epoch"]
+            self._write_header_to_csv(self.headers)
 
         if use_tensorboard:
             directory = self.saving_path + "/tensorboard"
             os.makedirs(directory, exist_ok=True)
             self.writer = SummaryWriter(directory)
-            
-        self.git_info = git_info
 
-    def ignore_files_and_folders(self, dir_name, names):
-        ignored = set()
-        files_to_ignore = {}
-        folders_to_ignore = {"rollout", "Logger"}
+    def copy_code_and_folders(self, src_dir, dst_dir, whitelist=None):
+        """
+        Copy files and folders from src_dir to dst_dir based on the whitelist.
+        """
+        if not os.path.exists(dst_dir):
+            os.makedirs(dst_dir)
 
-        for name in names:
-            path = os.path.join(dir_name, name)
+        for item in os.listdir(src_dir):
+            src_item = os.path.join(src_dir, item)
 
-            if os.path.isfile(path) and name in files_to_ignore:
-                ignored.add(name)
-            elif os.path.isdir(path) and name in folders_to_ignore:
-                ignored.add(name)
+            if os.path.isdir(src_item) and item in whitelist:
+                # Copy directory if it's in the whitelist
+                shutil.copytree(src_item, os.path.join(dst_dir, item))
 
-        return ignored
+            elif os.path.isfile(src_item):
+                for pattern in whitelist:
+                    if fnmatch.fnmatch(item, pattern):
+                        # Copy file if it matches a pattern in the whitelist
+                        shutil.copy2(src_item, os.path.join(dst_dir, item))
+                        break
+
+    def _write_header_to_csv(self, headers):
+        header_line = "Variables=" + " ".join(f'"{header}"' for header in headers)
+        with open(self.csv_file_path, "w") as file:
+            file.write(header_line + "\n")
+
+    def _update_csv_headers(self, new_headers):
+        with open(self.csv_file_path, "r") as file:
+            lines = file.readlines()
+
+        header_line = "Variables=" + " ".join(f'"{header}"' for header in new_headers)
+        lines[0] = header_line + "\n"
+
+        with open(self.csv_file_path, "w") as file:
+            file.writelines(lines)
+
+    def add_log_item(self, item: str, value, index=None):
+        if item not in self.log_item:
+            self.log_item[item] = [value]
+        else:
+            self.log_item[item].append(value)
 
     def log(self, item, value, index):
-        """
-        log index value couple for specific item into csv file / tensorboard
-        :item: string describing item (e.g. "training_loss","test_loss")
-        :value: value to log
-        :index: index (e.g. batchindex / epoch)
-        """
-
         if self.use_csv:
-            filename = "Logger/{}/{}/logs/{}.log".format(self.name, self.datetime, item)
+            self.add_log_item(item, value, index)
 
-            if os.path.exists(filename):
-                append_write = "a"
-            else:
-                append_write = "w"
+            current_headers = ["epoch"] + list(self.log_item.keys())
+            if set(current_headers) != set(self.headers):
+                self.headers = current_headers
+                self._update_csv_headers(self.headers)
 
-            with open(filename, append_write) as log_file:
-                log_file.write("{}, {}\n".format(index, value))
+            with open(self.csv_file_path, "a") as file:
+                row = [index]
+                for _, v in self.log_item.items():
+                    row.append(v[-1])
+                row_string = " ".join(str(item) for item in row)
+                file.write(row_string + "\n")
 
         if self.use_tensorboard:
             self.writer.add_scalar(item, value, index)
@@ -139,7 +175,7 @@ class Logger:
                 self.writer.add_histogram(f"{item}_grad_histogram", gradients, index)
                 self.writer.add_scalar(f"{item}_grad_norm2", gradients.norm(2), index)
 
-    def plot(self, item, log=False, smoothing=0.025, ylim=None):
+    def plot(self, res_dict=None, data_index=None, split="train"):
         """
         plot item metrics
         :item: item
@@ -148,78 +184,16 @@ class Logger:
         :ylim: y-axis limits [lower,upper]
         """
 
-    # def plot_unv(curent_sample=None,graph_list=None,plot_index=0):
-    # 	import matplotlib
-    # 	matplotlib.use('Agg')
-    # 	import matplotlib.pyplot as plt
-    # 	from matplotlib import tri as mtri
-    # 	if curent_sample is not None:
-    # 		for k,v in curent_sample.items():
+        if split == "train":
+            res_saving_dir = f"{self.saving_path}/traing_results/{data_index}.vtu"
+        else:
+            res_saving_dir = f"{self.saving_path}/valid_case/{data_index}.vtu"
 
-    # 			if isinstance(v,torch.Tensor):
-    # 				curent_sample[k] = v.cpu()
-    # 		mesh_pos = curent_sample['mesh_pos'][0]
-    # 		centroid = curent_sample['centroid'][0]
-    # 		face_node = curent_sample["face"][0].long()
-    # 		cells_node = curent_sample["cells_node"][0].long().T
-    # 		face_center_pos = (mesh_pos[face_node[0]]+mesh_pos[face_node[1]])/2.
-    # 		unit_normal_vector = curent_sample['unit_norm_v'][0]
-
-    # 	elif graph_list is not None:
-    # 		graph_node = graph_list[0].cpu()
-    # 		graph_edge = graph_list[1].cpu()
-    # 		graph_cell = graph_list[2].cpu()
-
-    # 		mask_node = graph_node.batch==plot_index
-    # 		mask_edge = graph_edge.batch==plot_index
-    # 		mask_cell = graph_cell.batch==plot_index
-
-    # 		mesh_pos=graph_node.pos[mask_node]
-    # 		centroid = graph_cell.pos[mask_cell]
-    # 		face_node = graph_node.edge_index[:,mask_edge]-graph_node.edge_index[:,mask_edge].min()
-    # 		cells_node = graph_node.face[:,mask_cell]-graph_node.face[:,mask_cell].min()
-    # 		face_center_pos = graph_edge.pos[mask_edge]
-    # 		face_type = graph_edge.x[mask_edge,0:1].view(-1)
-    # 		unit_normal_vector = graph_cell.unv[mask_cell]
-    # 		cell_type = graph_cell.cells_type[mask_cell].view(-1)
-
-    # 	fig, (ax1, ax2,ax3) = plt.subplots(3, 1, figsize=(16, 27))
-    # 	# 设置三角剖分
-    # 	# mesh_pos=to_numpy(current_dataset['mesh_pos'][0])
-    # 	# cells_node=to_numpy(current_dataset['cells_node'][0])
-
-    # 	triang = mtri.Triangulation(mesh_pos[:, 0].numpy(), mesh_pos[:, 1].numpy(),cells_node.T.numpy())
-    # 	ax1.set_title('cell_center_field')
-    # 	ax1.set_aspect('equal')
-    # 	ax1.scatter(centroid[cell_type==utilities.NodeType.INFLOW,0].numpy(),centroid[cell_type==utilities.NodeType.INFLOW,1].numpy(),s=0.5,color="blue")
-    # 	ax1.scatter(centroid[cell_type==utilities.NodeType.NORMAL,0].numpy(),centroid[cell_type==utilities.NodeType.NORMAL,1].numpy(),s=0.5,color="red")
-    # 	ax1.scatter(centroid[cell_type==utilities.NodeType.WALL_BOUNDARY,0].numpy(),centroid[cell_type==utilities.NodeType.WALL_BOUNDARY,1].numpy(),s=0.5,color="green")
-    # 	ax1.scatter(centroid[cell_type==utilities.NodeType.GHOST_INFLOW,0].numpy(),centroid[cell_type==utilities.NodeType.GHOST_INFLOW,1].numpy(),s=0.5,color="orange")
-    # 	ax1.scatter(centroid[cell_type==utilities.NodeType.GHOST_WALL,0].numpy(),centroid[cell_type==utilities.NodeType.GHOST_WALL,1].numpy(),s=0.5,color="teal")
-    # 	ax1.triplot(triang, 'ko-', ms=0.5, lw=0.3, zorder=1)
-
-    # 	ax2.set_title('face_center_field')
-    # 	ax2.set_aspect('equal')
-    # 	ax2.triplot(triang, 'ko-', ms=0.5, lw=0.3, zorder=1)
-    # 	ax2.scatter(face_center_pos[face_type==utilities.NodeType.INFLOW,0].numpy(),face_center_pos[face_type==utilities.NodeType.INFLOW,1].numpy(),s=0.5,color="blue")
-    # 	ax2.scatter(face_center_pos[face_type==utilities.NodeType.NORMAL,0].numpy(),face_center_pos[face_type==utilities.NodeType.NORMAL,1].numpy(),s=0.5,color="red")
-    # 	ax2.scatter(face_center_pos[face_type==utilities.NodeType.WALL_BOUNDARY,0].numpy(),face_center_pos[face_type==utilities.NodeType.WALL_BOUNDARY,1].numpy(),s=0.5,color="green")
-    # 	ax2.scatter(face_center_pos[face_type==utilities.NodeType.GHOST_INFLOW,0].numpy(),face_center_pos[face_type==utilities.NodeType.GHOST_INFLOW,1].numpy(),s=0.5,color="orange")
-    # 	ax2.scatter(face_center_pos[face_type==utilities.NodeType.GHOST_WALL,0].numpy(),face_center_pos[face_type==utilities.NodeType.GHOST_WALL,1].numpy(),s=0.5,color="teal")
-
-    # 	# trajectory["unit_norm_v"] = unit_normal_vector.unsqueeze(0)
-
-    # 	ax3.set_title('unit_norm_vector')
-    # 	ax3.set_aspect('equal')
-    # 	ax3.triplot(triang, 'ko-', ms=0.5, lw=0.3, zorder=1)
-
-    # 	ax3.quiver(centroid[:,0].numpy(),centroid[:,1].numpy(),unit_normal_vector[:,0,0].numpy(),unit_normal_vector[:,0,1].numpy(),units='height',color="red", angles='xy',scale_units='xy', scale=2,width=0.0025, headlength=2, headwidth=1, headaxislength=2.5)
-
-    # 	ax3.quiver(centroid[:,0].numpy(),centroid[:,1].numpy(),unit_normal_vector[:,1,0].numpy(),unit_normal_vector[:,1,1].numpy(),units='height',color="blue", angles='xy',scale_units='xy', scale=2,width=0.0025, headlength=2, headwidth=1, headaxislength=2.5)
-
-    # 	ax3.quiver(centroid[:,0].numpy(),centroid[:,1].numpy(),unit_normal_vector[:,2,0].numpy(),unit_normal_vector[:,2,1].numpy(),units='height',color="green", angles='xy',scale_units='xy', scale=2,width=0.0025, headlength=2, headwidth=1, headaxislength=2.5)
-
-    # 	plt.savefig("unit_norm_check.png",dpi=400)
+        os.makedirs(os.path.dirname(res_saving_dir), exist_ok=True)
+        if "cells_node" in res_dict:
+            to_vtk.write_to_vtk(res_dict, res_saving_dir)
+        else:
+            to_vtk.write_point_cloud_to_vtk(res_dict, res_saving_dir)
 
     def save_state(self, model, optimizer, scheduler, index="final"):
         """
@@ -232,9 +206,7 @@ class Logger:
         path = self.saving_path + "/states"
 
         with open(path + "/commandline_args.json", "wt") as f:
-            json.dump(
-                {**vars(self.params), **self.git_info}, f, indent=4, ensure_ascii=False
-            )
+            json.dump({**vars(self.params)}, f, indent=4, ensure_ascii=False)
 
         model.save_checkpoint(path + "/{}.state".format(index), optimizer, scheduler)
         return path + "/{}.state".format(index)
@@ -246,12 +218,25 @@ class Logger:
         :index: index of state to save (e.g. specific evolution)
         """
         os.makedirs(
-            "Logger/{}/{}/states".format(self.name, self.datetime), exist_ok=True
+            "{}/{}/{}/states".format(self.head, self.name, self.datetime), exist_ok=True
         )
-        path = "Logger/{}/{}/states/{}.dic".format(self.name, self.datetime, index)
+        path = "{}/{}/{}/states/{}.dic".format(self.head, self.name, self.datetime, index)
         with open(path, "wb") as f:
             pickle.dump(dic, f)
-
+            
+    def save_model_state_subprocess(self, fluid_model, optimizer, lr_scheduler, index):
+        """
+        子进程中调用的函数，用于调用 logger.save_state
+        """
+        model_saving_path = self.save_state(
+            model=fluid_model,
+            optimizer=optimizer,
+            scheduler=lr_scheduler,
+            index=index,
+        )
+        
+        return model_saving_path
+    
     def load_state(
         self,
         model,
@@ -273,7 +258,7 @@ class Logger:
         """
 
         if datetime is None:
-            for _, dirs, _ in os.walk("Logger/{}/".format(self.name)):
+            for _, dirs, _ in os.walk("{}/{}/".format(self.head, self.name)):
                 datetime = sorted(dirs)[-1]
                 if datetime == self.datetime:
                     datetime = sorted(dirs)[-2]
@@ -286,12 +271,12 @@ class Logger:
 
         if index is None:
             for _, _, files in os.walk(
-                "Logger/{}/{}/states/".format(self.name, datetime)
+                "{}/{}/{}/states/".format(self.head, self.name, datetime)
             ):
                 index = os.path.splitext(natsorted(files)[-1])[0]
                 break
 
-        path = "Logger/{}/{}/states/{}.state".format(self.name, datetime, index)
+        path = "{}/{}/{}/states/{}.state".format(self.head, self.name, datetime, index)
 
         model.load_checkpoint(
             optimizer=optimizer, scheduler=scheduler, ckpdir=path, device=device
@@ -310,7 +295,7 @@ class Logger:
         """
 
         if datetime is None:
-            for _, dirs, _ in os.walk("Logger/{}/".format(self.name)):
+            for _, dirs, _ in os.walk("{}/{}/".format(self.head, self.name)):
                 datetime = sorted(dirs)[-1]
                 if datetime == self.datetime:
                     datetime = sorted(dirs)[-2]
@@ -323,12 +308,12 @@ class Logger:
 
         if index is None:
             for _, _, files in os.walk(
-                "Logger/{}/{}/states/".format(self.name, datetime)
+                "{}/{}/{}/states/".format(self.head, self.name, datetime)
             ):
                 index = os.path.splitext(natsorted(files)[-1])[0]
                 break
 
-        path = "Logger/{}/{}/states/{}.dic".format(self.name, datetime, index)
+        path = "{}/{}/{}/states/{}.dic".format(self.head, self.name, datetime, index)
         with open(path, "rb") as f:
             state = pickle.load(f)
 
@@ -337,22 +322,22 @@ class Logger:
 
         return datetime, index
 
-    def load_logger(self, datetime=None, load=False):
+    def load_logger(self, datetime=None, load=False, saving_path=None):
         """
         copy older tensorboard logger to new dir
         :datetime: date and time from run to load (if None: take latest folder)
         """
 
         if datetime is None:
-            for _, dirs, _ in os.walk("Logger/{}/".format(self.name)):
+            for _, dirs, _ in os.walk("{}/{}/".format(self.head, self.name)):
                 datetime = sorted(dirs)[-1]
                 if datetime == self.datetime:
                     datetime = sorted(dirs)[-2]
                 break
-
+     
         if load:
             cwd = os.getcwd()
-            path = "Logger/{0}/{1}/tensorboard/".format(self.name, datetime)
+            path = "{}/{0}/{1}/tensorboard/".format(self.head, self.name, datetime)
             for _, _, files in os.walk(path):
                 for file in files:
                     older_tensorboard_n = file
@@ -360,8 +345,8 @@ class Logger:
 
                     newer_tensorboard = (
                         cwd
-                        + "/Logger/{0}/{1}/tensorboard/".format(
-                            self.name, self.datetime
+                        + "/{0}/{1}/{2}/tensorboard/".format(
+                            self.head, self.name, self.datetime
                         )
                         + older_tensorboard_n
                     )

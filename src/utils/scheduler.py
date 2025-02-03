@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from torch import nn
-import torch
+import os
 from torch import optim
 from math import pow
 from torch.optim.lr_scheduler import _LRScheduler, ReduceLROnPlateau
@@ -82,13 +82,6 @@ class GradualStepExplrScheduler(_LRScheduler):
                     for base_lr in self.base_lrs
                 ]
                 return self._last_step_lr
-
-            # elif len(list(filter(lambda x: self.last_epoch > x, self.milestone)))>0 and self.milestone_trigger:
-            #     self.milestone_hit+=1
-            #     self.milestone_trigger=False
-            #     self._last_step_lr = [base_lr*self.gamma**self.milestone_hit for base_lr in self.base_lrs]
-            #     return self._last_step_lr
-
             else:
                 self._last_step_lr = [
                     base_lr * self.gamma**self.milestone_hit
@@ -188,37 +181,120 @@ class Net(nn.Module):
         out = self.net(input)
         return out
 
+class StepexpLRScheduler(_LRScheduler):
+    def __init__(
+        self,
+        optimizer,
+        startlr,
+        steplr_milestone,
+        steplr_gamma,
+        explr_milestone,
+        explr_gamma,
+        total_epoch,
+        min_lr,
+        last_epoch=-1,
+    ):
+        self.startlr = startlr
+        self.steplr_milestone = steplr_milestone
+        self.steplr_gamma = steplr_gamma
+        self.explr_milestone = explr_milestone
+        self.explr_gamma = explr_gamma
+        self.total_epoch = total_epoch
+
+        if isinstance(min_lr, (list, tuple)):
+            if len(min_lr) != len(optimizer.param_groups):
+                raise ValueError(
+                    f"expected {len(optimizer.param_groups)} min_lrs, got {len(min_lr)}"
+                )
+            self.min_lrs = list(min_lr)
+        else:
+            self.min_lrs = [min_lr] * len(optimizer.param_groups)
+
+        self.decay_steps = total_epoch - explr_milestone
+        super(StepexpLRScheduler, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        if self.last_epoch < self.steplr_milestone:
+            return [self.startlr for _ in self.base_lrs]
+        elif self.steplr_milestone <= self.last_epoch < self.explr_milestone:
+            return [self.startlr * self.steplr_gamma for _ in self.base_lrs]
+        else:
+            decay_progress = (self.last_epoch - self.explr_milestone) / self.decay_steps
+            return [
+                min_lr
+                + max(base_lr * self.steplr_gamma - min_lr, 0)
+                * pow(self.explr_gamma, decay_progress)
+                for base_lr, min_lr in zip(self.base_lrs, self.min_lrs)
+            ]
 
 """Test Lr curve and plot"""
 if __name__ == "__main__":
-    lr_list = []
+    
+    saving_path = os.path.dirname(os.path.abspath(__file__))
+    os.makedirs(f"{saving_path}/lr_vis", exist_ok=True)
+    
+    ver="new" 
     model = Net()
-    LR = 1e-3
-    train_steps = 20000
-    explrdecay = 10000
-    optimizer = optim.Adam(model.parameters(), lr=LR)
-    scheduler1 = ExpLR(optimizer, decay_steps=explrdecay, gamma=1e-4, min_lr=4e-7)
-    # scheduler2 = torch.optim.lr_scheduler.MultiStepLR(optimizer,milestones=[3,6,9], gamma=0.5)
-    scheduler3 = GradualStepExplrScheduler(
-        optimizer,
-        multiplier=1.0,
-        milestone=[3000],
-        gamma=0.1,
-        total_epoch=10000,
-        after_scheduler=scheduler1,
-        expgamma=0.01,
-        decay_steps=10000,
-        min_lr=1e-6,
-    )
-    # lambda1 = lambda epoch: 0.1/epoch  if epoch in [3,6,10]  else epoch
-    # scheduler4 = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda1)
-    for epoch in range(train_steps):
-        for i in range(2):
-            optimizer.zero_grad()
+    startlr = 1e-4
+    total_epoch = 100000
+    optimizer = optim.Adam(model.parameters(), lr=startlr)
+
+    steplr_decay_steps = int(total_epoch* 0.1)
+    explr_decay_steps = int(total_epoch * 0.3)
+    if ver == "old":
+        two_step_scheduler = ExpLR(
+            optimizer, decay_steps=total_epoch - explr_decay_steps, gamma=1e-4
+        )
+        scheduler = GradualStepExplrScheduler(
+            optimizer,
+            multiplier=1.0,
+            milestone=[steplr_decay_steps],
+            gamma=0.1,
+            total_epoch=explr_decay_steps,
+            after_scheduler=two_step_scheduler,
+            expgamma=1e-2,
+            decay_steps=total_epoch - explr_decay_steps,
+            min_lr=1e-6,
+        )
+    elif ver == "new":
+            
+        scheduler = StepexpLRScheduler(
+            optimizer = optimizer,
+            startlr=startlr,
+            steplr_milestone=steplr_decay_steps,
+            steplr_gamma=1,
+            explr_milestone=explr_decay_steps,
+            explr_gamma=0.1,
+            total_epoch=total_epoch,
+            min_lr=1e-6,
+        )
+
+    # Collect learning rates and write to .dat file
+    dat_file_path = f"{saving_path}/lr_vis/learning_rate_schedule_{ver}.dat"
+    with open(dat_file_path, 'w') as f:
+        f.write('Variables="epoch" "learning_rate"\n')
+        
+        lrs = []
+        for epoch in range(total_epoch):
+            lr = scheduler.get_lr()[0]  # Get the first (and only) learning rate
+            lrs.append(lr)
+            f.write(f"{epoch} {lr:.10f}\n")
+            
             optimizer.step()
-        scheduler3.step()
-        lr_list.append(optimizer.state_dict()["param_groups"][0]["lr"])
-        if epoch > explrdecay:
-            print("final lr %.2e" % optimizer.state_dict()["param_groups"][0]["lr"])
-    plt.plot(range(train_steps), lr_list, color="r")
-    print("done")
+            scheduler.step()
+
+    print(f"Learning rate schedule written to {dat_file_path}")
+
+    # Plot the learning rate curve
+    plt.figure(figsize=(12, 6))
+    plt.plot(lrs)
+    plt.title('Learning Rate Schedule')
+    plt.xlabel('Epoch')
+    plt.ylabel('Learning Rate')
+    # plt.yscale('log')
+    plt.axvline(x=steplr_decay_steps, color='r', linestyle='--', label='Step LR Milestone')
+    plt.axvline(x=explr_decay_steps, color='g', linestyle='--', label='Exp LR Milestone')
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f'{saving_path}/lr_vis/learning_rate_schedule_{ver}.png')
+
