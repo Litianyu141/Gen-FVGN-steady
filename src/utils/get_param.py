@@ -48,9 +48,9 @@ def params(load=None):
         parser.add_argument('--dimless', default=True, type=str2bool, help='Injetcting noise on face length for prevention of overfiting (default:False)')
         parser.add_argument('--norm_uvp', default=True, type=str2bool, help='Whether norm input uvp value at graph_node.x (default:False)')
         parser.add_argument('--norm_global', default=False, type=str2bool, help='Whether norm input condition (eq. Re, pde_theta) value at graph_node.x (default:False)')
-        parser.add_argument('--ncn_smooth', default=True, type=str2bool, help='inteploting node value to cell and to node (default:False)')
-        parser.add_argument('--conserved_form', default=True, type=str2bool, help='Use artifacial wall method, which is setting boudary node to zero which it was flow into the domain (default:False)')
-        parser.add_argument('--residual_tolerance', default=1e-7, type=float, help='unsteady time stepping convergence tolerance')
+        parser.add_argument('--ncn_smooth', default=True, type=str2bool, help='inteploting node value to cell and to node for smoother results (default:False)')
+        parser.add_argument('--conserved_form', default=True, type=str2bool, help='whether use conserved discrete form (default:True)')
+        parser.add_argument('--residual_tolerance', default=1e-7, type=float, help='abandaned')
         parser.add_argument('--max_inner_steps', default=20, type=int, help='unsteady time stepping convergence max iteration steps')
         parser.add_argument('--order', default="2nd", type=str, help='order of WLSQ', choices=["1st","2nd","3rd", "4th"])
         

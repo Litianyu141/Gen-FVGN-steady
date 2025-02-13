@@ -10,7 +10,10 @@ Our results demonstrate that the trained GNN model can efficiently solve multipl
 with the number of iterations required to reach a steady-state solution being only 25\% of that required by traditional second-order CFD solvers.
 The implementation code of this paper is available on GitHub
 
----
+<p align="center"><p align="left">
+  <img src="src_README/Model_Arc.png" alt="Image description" width="720"/>
+</p>
+
 # TODO List
 
 - [ ] GreenGauss Gradient (node-based and cell-based)
@@ -18,22 +21,27 @@ The implementation code of this paper is available on GitHub
 - [ ] Check if all grids are usable
 - [ ] Fix LBFGS training bugs
 
-## Table of Contents
+# Catalog
 
 - [Generative Finite Volume Graph Network (Gen-FVGN)](#generative-finite-volume-graph-network-gen-fvgn)
 - [TODO List](#todo-list)
-  - [Table of Contents](#table-of-contents)
-  - [Installation of the Code Environment](#installation-of-the-code-environment)
-  - [Code Directory and File Structure](#code-directory-and-file-structure)
+- [Catalog](#catalog)
+- [Installation of the Code Environment](#installation-of-the-code-environment)
+- [How To Use](#how-to-use)
+  - [Mesh Generation](#mesh-generation)
+  - [Pre-Train](#pre-train)
+  - [Inference Without Adam](#inference-without-adam)
+  - [Inference With Adam](#inference-with-adam)
+- [Code Directory and File Structure](#code-directory-and-file-structure)
     - [Top-level Files](#top-level-files)
     - [Example Code Files](#example-code-files)
     - [Instructions for Using Mesh Files](#instructions-for-using-mesh-files)
     - [Explanation of the BC.json File](#explanation-of-the-bcjson-file)
   - [Explanation of Parameter Validity](#explanation-of-parameter-validity)
-  - [Common Issues](#common-issues)
+  - [Common Issue](#common-issue)
     - [Loss Calculation Produces NaN](#loss-calculation-produces-nan)
 
-## Installation of the Code Environment
+# Installation of the Code Environment
 **pytorch-2.3.0**
 ```bash
 conda create -n FVGN-pt2.3 python==3.11 # Create a new conda environment and specify the Python version
@@ -57,7 +65,75 @@ pip install --no-index pyg_lib torch_scatter torch_sparse torch_cluster torch_sp
 pip install -r src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ```
 
-## Code Directory and File Structure
+# How To Use
+
+## Mesh Generation
+
+**Gen-FVGN employs its own data structure stored in the .h5 file format, which necessitates conversion from other mesh file formats.**
+
+1. Example meshes are provided in the `mesh_example` folder. However, if you wish to create a custom two-dimensional mesh, you can generate one using COMSOL software. Please refer to the `.mph` file in the `mesh_example` directory (which can be directly opened in COMSOL6.1) for guidance.
+
+2. In COMSOL, export the mesh in the `.mphtxt` format, and then configure a `BC.json` file following the example provided in the [Explanation of the BC.json File](#explanation-of-the-bcjson-file) section. This file maps COMSOL's GEO IDs to boundary conditions for subsequent processing.
+
+3. After generating the mesh, specify the path to the mesh folder (note: it should be the folder path) in `src/Extract_mesh/parse_comsol.py`, and run the script. This will convert the `.mphtxt` mesh files into a format supported by Gen-FVGN. Typically, two additional files, `face_type.vtu` and `vis_mesh.vtu`, are also generated in the mesh folder. These files can be visualized in Tecplot or Paraview using Scatter mode to verify that the boundary conditions are correctly set (especially at the corners).
+
+## Pre-Train 
+**(Applicable to both parametric and non-parametric solving)**
+1. In `src/Utils/get_param.py`, specify the mesh folder path (using `-dataset_dir`), and ensure that the parameter ranges for the solution are correctly set in the `BC.json` file.
+
+2. Check the parameters in `src/Utils/get_param.py`, particularly those under the `# train strategy parameters` section.
+
+3. Run:
+```sh
+python src/pre_train_Adam.py
+```
+to start training.
+
+## Inference Without Adam
+In `src/solve_without_grad_GPU.py`, configure the model's training date and state index as recorded by the Logger. For example, set the following parameters:
+```python
+params = get_param.params()  # Do not modify
+params.batch_size = 1  # Do not modify
+params.dataset_size = 1  # Do not modify
+params.load_date_time = "2025-01-18-15-36-11"  # str, specify the date of the trained model to use
+params.load_index = 1  # int, specify the state index of the model
+params.on_gpu = 0 
+params.dataset_dir = "datasets/lid_driven_cavity_101x101"  # str, path to the mesh folder for inference
+params.n_epochs = 40000
+# params.max_inner_steps = 10000  # Inner iterations are not required in rollout mode
+logger_head = "Logger"
+```
+
+Then run:
+```sh
+python src/solve_without_grad_GPU.py
+```
+to execute inference.
+
+## Inference With Adam
+Most parameter settings remain the same as above; however, note that you must additionally specify the number of inner iteration steps, as we aim to progress in time only after each inner iteration has converged:
+```python
+''' >>> Set parameters individually >>> '''
+params = get_param.params()
+params.batch_size = 1
+params.dataset_size = 1
+params.load_date_time = "2025-01-18-15-36-11"  # str
+params.load_index = 1  # int
+params.on_gpu = 0
+params.dataset_dir = "datasets/lid_driven_cavity_101x101"
+params.n_epochs = 40000
+params.max_inner_steps = 10000
+logger_head = "Logger"
+''' <<< End of individual parameter settings <<< '''
+```
+
+Then run:
+```sh
+python src/solve_with_grad_GPU.py
+```
+to execute inference.
+
+# Code Directory and File Structure
 
 - **datasets/**: Stores the mesh files to be solved (this folder is included in `.gitignore`), so your local mesh files placed here will not be synced by git. Create it if it does not exist.
 - **mesh_example/**: Contains example mesh files to be solved (not included in `.gitignore`).
@@ -81,16 +157,15 @@ pip install -r src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 ---
 
 ### Instructions for Using Mesh Files
-Example mesh files are located in the `mesh_example\` directory. You can transfer them to the `datasets\` folder (create it if it does not exist) or leave them in place. The specific mesh path is configured in `src/Utils/get_param.py`.
+Example mesh files are located in the `mesh_example/` directory. You can transfer them to the `datasets/` folder (create it if it does not exist) or leave them in place. The specific mesh path is configured in `src/Utils/get_param.py`.
 
-(If you want to solve for other Reynolds numbers, you can copy the folder containing the mesh and modify the parameter range in `BC.json`.
-)
+(If you want to solve for other Reynolds numbers, you can copy the folder containing the mesh and modify the parameter range in `BC.json`.)
 
 ***Note: Please verify that your mesh folder contains an `.h5` file. If not, you must specify the mesh path in the `src/Extract_mesh/parse_comsol.py` file, then run the script to convert the file to the `.h5` format. Only `.h5` files are recognized by Gen-FVGN.***
 
 Typically, mesh files are stored in a folder path such as `datasets/lid_driven/lid_driven_cavity_81x81`, where `lid_driven_cavity_81x81` is a user-defined mesh name:
 ```
---- lid_driven_cavity_81x81\
+--- lid_driven_cavity_81x81/
     -- BC.json # This is the boundary condition settings file. Please refer to the next section for details.
     -- mesh.mphtxt # This is the mesh file exported from COMSOL.
 ```
@@ -100,7 +175,7 @@ This file defines which boundaries in the mesh are subject to boundary condition
 
 **Terminology:**
 `Geo ID`: Refers to the identifier set in COMSOL. For example, in the image below, the red-circled area indicates the Geo ID. You can also click the green button in the image to directly copy the `Geo ID`.
-<p align="center"><p align="left">
+<p align="center">
   <img src="src_README/image.png" alt="Image description" width="720"/>
 </p>
 
@@ -155,6 +230,6 @@ Verify that the parameter configuration in `solving_params` is reasonable. There
    - **Must be 0:** `convection`, `mu`, `source`
    - **Optional:** Other parameters
 
-## Common Issues
+## Common Issue
 ### Loss Calculation Produces NaN
 Please check if the `norm_global` parameter is enabled in `src/Utils/get_params.py`. If it is enabled, ensure that at least one of the parameters in `PDE_theta` within the BC.json file of your datasets has a valid range (i.e., the start, step, and stop values are not all identical). When `norm_global` is enabled, normalization is applied to `PDE_theta`, and if all values are identical, it may lead to division overflow or result in an extremely large number.
