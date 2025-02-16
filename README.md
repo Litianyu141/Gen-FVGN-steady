@@ -8,8 +8,7 @@ The core innovation lies in an unsupervised training algorithm that utilizes GPU
 such as gradient reconstruction and surface integration.
 Our results demonstrate that the trained GNN model can efficiently solve multiple PDEs with varying boundary conditions and source terms in a single training session, 
 with the number of iterations required to reach a steady-state solution being only 25\% of that required by traditional second-order CFD solvers.
-The implementation code of this paper is available on GitHub
-
+[arxiv](https://arxiv.org/pdf/2405.04466)
 <p align="center"><p align="left">
   <img src="src_README/Model_Arc.png" alt="Image description" width="720"/>
 </p>
