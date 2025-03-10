@@ -8,7 +8,7 @@ The core innovation lies in an unsupervised training algorithm that utilizes GPU
 such as gradient reconstruction and surface integration.
 Our results demonstrate that the trained GNN model can efficiently solve multiple PDEs with varying boundary conditions and source terms in a single training session, 
 with the number of iterations required to reach a steady-state solution being only 25\% of that required by traditional second-order CFD solvers.
-[arxiv](https://arxiv.org/pdf/2405.04466)
+[[arxiv](https://arxiv.org/pdf/2405.04466)]
 <p align="center"><p align="left">
   <img src="src_README/Model_Arc.png" alt="Image description" width="720"/>
 </p>
@@ -27,14 +27,14 @@ with the number of iterations required to reach a steady-state solution being on
 - [Catalog](#catalog)
 - [Installation of the Code Environment](#installation-of-the-code-environment)
 - [How To Use](#how-to-use)
-  - [Mesh Generation](#mesh-generation)
+  - [Mesh Generation and Data Structure](#mesh-generation-and-data-structure)
   - [Pre-Train](#pre-train)
   - [Inference Without Adam](#inference-without-adam)
-  - [Inference With Adam](#inference-with-adam)
+  - [Inference With Adam (PINN-Style)](#inference-with-adam-pinn-style)
 - [Code Directory and File Structure](#code-directory-and-file-structure)
     - [Top-level Files](#top-level-files)
     - [Example Code Files](#example-code-files)
-    - [Instructions for Using Mesh Files](#instructions-for-using-mesh-files)
+    - [Instructions for Mesh dir](#instructions-for-mesh-dir)
     - [Explanation of the BC.json File](#explanation-of-the-bcjson-file)
   - [Explanation of Parameter Validity](#explanation-of-parameter-validity)
   - [Common Issue](#common-issue)
@@ -66,7 +66,7 @@ pip install -r src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # How To Use
 
-## Mesh Generation
+## Mesh Generation and Data Structure
 
 **Gen-FVGN employs its own data structure stored in the .h5 file format, which necessitates conversion from other mesh file formats.**
 
@@ -75,6 +75,8 @@ pip install -r src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 2. In COMSOL, export the mesh in the `.mphtxt` format, and then configure a `BC.json` file following the example provided in the [Explanation of the BC.json File](#explanation-of-the-bcjson-file) section. This file maps COMSOL's GEO IDs to boundary conditions for subsequent processing.
 
 3. After generating the mesh, specify the path to the mesh folder (note: it should be the folder path) in `src/Extract_mesh/parse_comsol.py`, and run the script. This will convert the `.mphtxt` mesh files into a format supported by Gen-FVGN. Typically, two additional files, `face_type.vtu` and `vis_mesh.vtu`, are also generated in the mesh folder. These files can be visualized in Tecplot or Paraview using Scatter mode to verify that the boundary conditions are correctly set (especially at the corners).
+
+4. **Don`t forget to check this 4 pages instruction [[google drive](https://drive.google.com/file/d/1GdUveKnPZJX2zeNtZj78O8h93vWVMxL8/view?usp=sharing)] for the data structure**
 
 ## Pre-Train 
 **(Applicable to both parametric and non-parametric solving)**
@@ -109,7 +111,7 @@ python src/solve_without_grad_GPU.py
 ```
 to execute inference.
 
-## Inference With Adam
+## Inference With Adam (PINN-Style)
 Most parameter settings remain the same as above; however, note that you must additionally specify the number of inner iteration steps, as we aim to progress in time only after each inner iteration has converged:
 ```python
 ''' >>> Set parameters individually >>> '''
@@ -155,7 +157,7 @@ to execute inference.
 - **src/grad_test.py**: Contains code for gradient reconstruction testing using the Euler Scalar function. A key parameter is `params.order`, which determines the order of accuracy for WLSQ gradient reconstruction.
 ---
 
-### Instructions for Using Mesh Files
+### Instructions for Mesh dir
 Example mesh files are located in the `mesh_example/` directory. You can transfer them to the `datasets/` folder (create it if it does not exist) or leave them in place. The specific mesh path is configured in `src/Utils/get_param.py`.
 
 (If you want to solve for other Reynolds numbers, you can copy the folder containing the mesh and modify the parameter range in `BC.json`.)
@@ -180,8 +182,8 @@ This file defines which boundaries in the mesh are subject to boundary condition
 
 ```json
 {
-    "inflow": [3, 4], // Represents the `Geo ID` for the velocity inlet boundary.
-    "wall": [1, 2, 5, "7-10"], // Represents the `Geo IDs` for the wall boundaries.
+    "inflow": [1], // Represents the `Geo ID` for the velocity inlet boundary.
+    "wall": [2, 5, "7-10"], // Represents the `Geo IDs` for the wall boundaries.
     "outflow": null, // Represents the `Geo ID` for the outlet boundary; set to null if not applicable.
     "pressure_point": [3], // The Geo ID for the pressure constraint point, typically used in lid-driven flow cases.
     "surf": null, // The `Geo ID` for the obstacle surface.
