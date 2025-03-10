@@ -76,7 +76,7 @@ pip install -r src/requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 3. After generating the mesh, specify the path to the mesh folder (note: it should be the folder path) in `src/Extract_mesh/parse_comsol.py`, and run the script. This will convert the `.mphtxt` mesh files into a format supported by Gen-FVGN. Typically, two additional files, `face_type.vtu` and `vis_mesh.vtu`, are also generated in the mesh folder. These files can be visualized in Tecplot or Paraview using Scatter mode to verify that the boundary conditions are correctly set (especially at the corners).
 
-4. **Don`t forget to check this 4 pages instruction [[google drive](https://drive.google.com/file/d/1GdUveKnPZJX2zeNtZj78O8h93vWVMxL8/view?usp=sharing)] for the data structure**
+4. **Don`t forget to check this 5 pages instruction [[google drive](https://drive.google.com/file/d/19n36e9OeaksQwS1KdxH83zOwVTDjy3ir/view?usp=sharing)] for the data structure**
 
 ## Pre-Train 
 **(Applicable to both parametric and non-parametric solving)**
