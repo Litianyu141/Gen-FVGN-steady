@@ -13,17 +13,12 @@ with the number of iterations required to reach a steady-state solution being on
   <img src="src_README/Model_Arc.png" alt="Image description" width="720"/>
 </p>
 
-# TODO List
+> Update (04.03.2025): This repo has already supported unsteady flow solving, e.g. cylinder flow in a pipe, you can simply change the Inlet velocity in BC.json to reach Re=100, and make sure inner_iteration>=20.
 
-- [ ] GreenGauss Gradient (node-based and cell-based)
-- [ ] Export to Tecplot dat file with surface zone
-- [ ] Check if all grids are usable
-- [ ] Fix LBFGS training bugs
 
 # Catalog
 
 - [Learning to Solve PDEs with Finite Volume-Informed Neural Networks in a Data-Free Approach](#learning-to-solve-pdes-with-finite-volume-informed-neural-networks-in-a-data-free-approach)
-- [TODO List](#todo-list)
 - [Catalog](#catalog)
 - [Installation of the Code Environment](#installation-of-the-code-environment)
 - [How To Use](#how-to-use)
@@ -39,6 +34,7 @@ with the number of iterations required to reach a steady-state solution being on
   - [Explanation of Parameter Validity](#explanation-of-parameter-validity)
   - [Common Issue](#common-issue)
     - [Loss Calculation Produces NaN](#loss-calculation-produces-nan)
+- [TODO List](#todo-list)
 
 # Installation of the Code Environment
 **pytorch-2.3.0**
@@ -234,3 +230,11 @@ Verify that the parameter configuration in `solving_params` is reasonable. There
 ## Common Issue
 ### Loss Calculation Produces NaN
 Please check if the `norm_global` parameter is enabled in `src/Utils/get_params.py`. If it is enabled, ensure that at least one of the parameters in `PDE_theta` within the BC.json file of your datasets has a valid range (i.e., the start, step, and stop values are not all identical). When `norm_global` is enabled, normalization is applied to `PDE_theta`, and if all values are identical, it may lead to division overflow or result in an extremely large number.
+
+
+# TODO List
+
+- [ ] GreenGauss Gradient (node-based and cell-based)
+- [ ] Export to Tecplot dat file with surface zone
+- [ ] Check if all grids are usable
+- [ ] Fix LBFGS training bugs
