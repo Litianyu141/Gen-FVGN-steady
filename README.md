@@ -1,4 +1,4 @@
-# Generative Finite Volume Graph Network (Gen-FVGN)
+# Learning to Solve PDEs with Finite Volume-Informed Neural Networks in a Data-Free Approach
 Partial differential equations (PDEs) play a crucial role in scientific computing. 
 Recent advancements in deep learning have led to the development of both data-driven and and Physics-Informed Neural Networks (PINNs) for efficiently solving PDEs, though challenges remain in data acquisition and generalization for both approaches.
 This paper presents a computational framework that combines the Finite Volume Method (FVM) with Graph Neural Networks (GNNs) to construct the PDE-loss, enabling direct parametric PDE solving during training without the need for precomputed data.
@@ -22,7 +22,7 @@ with the number of iterations required to reach a steady-state solution being on
 
 # Catalog
 
-- [Generative Finite Volume Graph Network (Gen-FVGN)](#generative-finite-volume-graph-network-gen-fvgn)
+- [Learning to Solve PDEs with Finite Volume-Informed Neural Networks in a Data-Free Approach](#learning-to-solve-pdes-with-finite-volume-informed-neural-networks-in-a-data-free-approach)
 - [TODO List](#todo-list)
 - [Catalog](#catalog)
 - [Installation of the Code Environment](#installation-of-the-code-environment)
