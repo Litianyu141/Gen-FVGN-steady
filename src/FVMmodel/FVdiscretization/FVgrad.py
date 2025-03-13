@@ -195,7 +195,7 @@ def compute_normal_matrix(
     
     return (A_node_to_node, B_node_to_node)
 
-# @torch.compile
+@torch.compile
 def node_based_WLSQ(
     phi_node=None,
     edge_index=None,
