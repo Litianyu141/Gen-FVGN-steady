@@ -2,8 +2,8 @@ import torch
 import numpy as np
 import torch.nn as nn
 from torch_scatter import scatter_mean,scatter_min,scatter_max
-from Utils.utilities import NodeType
-from Utils.normalization import Normalizer
+from utils.utilities import NodeType
+from utils.normalization import Normalizer
 from FVMmodel.FVdiscretization.FVscheme import Intergrator
 from timm.layers import trunc_normal_
 
