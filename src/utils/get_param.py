@@ -34,7 +34,7 @@ def params(load=None):
         parser = argparse.ArgumentParser(description='train / test a pytorch model to predict frames')
 
         # Training parameters
-        parser.add_argument('--net', default="TransFVGN_v2", type=str, help='network to train (default: FVGN)', choices=["Attu-FVGN2D","FVGN","TransFVGN_v1", "TransFVGN_v2"])
+        parser.add_argument('--net', default="TransFVGN_v2", type=str, help='network to train (default: FVGN)', choices=["FVGN","TransFVGN_v1", "TransFVGN_v2"])
         parser.add_argument('--n_epochs', default=210000, type=int, help='number of epochs (after each epoch, the model gets saved)')
         parser.add_argument('--batch_size', default=8, type=int, help='batch size (default: 100)')
         parser.add_argument('--average_sequence_length', default=500, type=int, help='average sequence length in dataset=dataset_size/batch_size(default: 5000)')

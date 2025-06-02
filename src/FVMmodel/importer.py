@@ -12,9 +12,7 @@ class NNmodel(nn.Module):
         super().__init__()
 
         self.params = params
-        if self.params.net == "Attu-FVGN2D":
-            from FVMmodel.Models.AttuFVGN2D.AttuFVGN import Simulator
-        elif self.params.net =='FVGN':
+        if self.params.net =='FVGN':
             from FVMmodel.Models.FVGN.GenFVGN import Simulator
         elif self.params.net =='TransFVGN_v1':
             from FVMmodel.Models.TransFVGN.TransFVGN_v1 import Simulator
