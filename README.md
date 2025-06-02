@@ -15,6 +15,7 @@ with the number of iterations required to reach a steady-state solution being on
 
 > Update (04.03.2025): This repo has already supported unsteady flow solving, e.g. cylinder flow in a pipe, you can simply change the Inlet velocity in BC.json to reach Re=100, and make sure inner_iteration>=20.
 
+> Update (06.02.2025): Released poly mesh support (FIXED boundary setting), update necessary code comment.
 
 # Catalog
 
@@ -27,8 +28,6 @@ with the number of iterations required to reach a steady-state solution being on
   - [Inference Without Adam](#inference-without-adam)
   - [Inference With Adam (PINN-Style)](#inference-with-adam-pinn-style)
 - [Code Directory and File Structure](#code-directory-and-file-structure)
-    - [Top-level Files](#top-level-files)
-    - [Example Code Files](#example-code-files)
     - [Instructions for Mesh dir](#instructions-for-mesh-dir)
     - [Explanation of the BC.json File](#explanation-of-the-bcjson-file)
   - [Explanation of Parameter Validity](#explanation-of-parameter-validity)
@@ -37,18 +36,11 @@ with the number of iterations required to reach a steady-state solution being on
 - [TODO List](#todo-list)
 
 # Installation of the Code Environment
-**pytorch-2.3.0**
-```bash
-conda create -n FVGN-pt2.3 python==3.11 # Create a new conda environment and specify the Python version
-conda activate FVGN-pt2.3 # Activate the Python environment
-conda install pytorch==2.3.0 torchvision==0.18.0 torchaudio==2.3.0 pytorch-cuda=12.1 -c pytorch -c nvidia # Install the GPU-enabled PyTorch 2.3 version
-pip install scipy -i https://pypi.tuna.tsinghua.edu.cn/simple # Pre-install scipy to avoid potential conflicts later
-pip install torch_geometric -i https://pypi.tuna.tsinghua.edu.cn/simple
-pip install --no-index pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://pytorch-geometric.com/whl/torch-2.3.0+cu121.html
-pip install -r src/requirements.txt
-```
 
 **pytorch-2.5.1**
+
+**Due to this repo employ torch.compile. please make sure you installed gcc/g++ on Linux or MSVC on Windows**
+
 ```bash
 conda create -n FVGN-pt2.5 python==3.11 # Create a new conda environment and specify the Python version
 conda activate FVGN-pt2.5 # Activate the Python environment
@@ -138,21 +130,6 @@ to execute inference.
 - **Ref_code/**: Storage location for reference code or dependent code snippets; it may include additional files or modules.
 - **src/**: The core source code directory of the project, including model implementations and training scripts.
 
-### Top-level Files
-
-- **.gitignore**: Lists files and folders to be ignored by Git, preventing unnecessary files from being committed to the repository.
-- **env_install_commands.txt**: Records the commands and dependencies required for environment setup. If you are running the repository's code for the first time, refer to this file for conda environment installation.
-- **LICENSE**: The project's license agreement, describing the copyright and usage restrictions.
-- **pyrightconfig.json**: Configures settings for Pyright (a TypeScript type checker) to disable Pylance’s type checking and static analysis.
-- **README.md**: The repository’s documentation, including a project overview, installation guide, and usage instructions.
-
-### Example Code Files
-
-- **src/train.py**: Pool Training. This script loads a number of meshes defined by `dataset_size` in `src/Utils/get_param.py` for solving, and returns data to the CPU after each forward pass.
-- **src/train_all_GPU.py**: All-on-GPU training. It loads `params.batch_size` meshes onto the GPU for solving in one go, without transferring them back to the CPU.
-- **src/grad_test.py**: Contains code for gradient reconstruction testing using the Euler Scalar function. A key parameter is `params.order`, which determines the order of accuracy for WLSQ gradient reconstruction.
----
-
 ### Instructions for Mesh dir
 Example mesh files are located in the `mesh_example/` directory. You can transfer them to the `datasets/` folder (create it if it does not exist) or leave them in place. The specific mesh path is configured in `src/Utils/get_param.py`.
 
@@ -230,11 +207,3 @@ Verify that the parameter configuration in `solving_params` is reasonable. There
 ## Common Issue
 ### Loss Calculation Produces NaN
 Please check if the `norm_global` parameter is enabled in `src/Utils/get_params.py`. If it is enabled, ensure that at least one of the parameters in `PDE_theta` within the BC.json file of your datasets has a valid range (i.e., the start, step, and stop values are not all identical). When `norm_global` is enabled, normalization is applied to `PDE_theta`, and if all values are identical, it may lead to division overflow or result in an extremely large number.
-
-
-# TODO List
-
-- [ ] GreenGauss Gradient (node-based and cell-based)
-- [ ] Export to Tecplot dat file with surface zone
-- [ ] Check if all grids are usable
-- [ ] Fix LBFGS training bugs

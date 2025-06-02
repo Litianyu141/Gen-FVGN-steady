@@ -23,6 +23,7 @@ from Utils.utilities import (
 from Utils.utilities import NodeType
 from Extract_mesh.parse_to_h5 import seperate_domain,build_k_hop_edge_index
 from torch_geometric.nn import knn_graph,knn,radius,radius_graph,knn_interpolate
+from Post_process.to_vtk import write_hybrid_mesh_to_vtu_2D,write_to_vtk,to_pv_cells_nodes_and_cell_types
 from torch_geometric import utils as pyg_utils
 from Load_mesh.Set_BC import velocity_profile
 from FVMmodel.FVdiscretization.FVgrad import compute_normal_matrix
@@ -79,7 +80,6 @@ class CFDdatasetBase:
     def init_env(
         mesh,
         mean_u=None,
-        dimless=False,
     ):
         # init node uvp
         node_pos = mesh["node|pos"]
@@ -120,10 +120,7 @@ class CFDdatasetBase:
         uvp_node[In_wall_mask] = uvp_node[In_wall_mask]/2.
 
         # store target node for dirchlet BC and make dimless if possible
-        if dimless:
-             mesh["target|uvp"] = uvp_node[:,0:2].clone() / mean_u
-        else:
-            mesh["target|uvp"] = uvp_node[:,0:2].clone()
+        mesh["target|uvp"] = uvp_node[:,0:2].clone() / mean_u
  
         # # interpolate init field to cell
         # centroid = mesh["cell|centroid"]
@@ -134,7 +131,7 @@ class CFDdatasetBase:
         return mesh, uvp_node
 
     @staticmethod
-    def set_PDE_theta(mesh, params, mean_velocity, rho, mu, source, aoa, dt, dL):
+    def set_theta_PDE(mesh, params, mean_velocity, rho, mu, source, aoa, dt, dL):
         """
         设置用于 PDE 求解的参数 theta_PDE, 并将其添加到 mesh 字典中。
 
@@ -159,25 +156,24 @@ class CFDdatasetBase:
         
         mesh_pos = mesh["node|pos"][0]
         
-        solving_params = mesh["solving_params"]
+        theta_PDE = mesh["theta_PDE_bak"]
         
-        unsteady_coefficent = solving_params["unsteady"]
+        unsteady_coefficent = theta_PDE["unsteady"]
 
-        continuity_eq_coefficent = solving_params["continuity"]
+        continuity_eq_coefficent = theta_PDE["continuity"]
 
-        convection_coefficent = solving_params["convection"]
+        convection_coefficent = theta_PDE["convection"]
 
-        grad_p_coefficent = solving_params["grad_p"] / rho
+        grad_p_coefficent = theta_PDE["grad_p"] / rho
 
         diffusion_coefficent = (
-            (mu) if 0 == convection_coefficent else # convection_coefficent=0 means poisson equation
-            (mu / (rho * mean_velocity)) if params.dimless else
-            mu / rho
-        ) # 1/Re
+            (mu / mean_velocity) if 0 == convection_coefficent else # convection_coefficent=0 means poisson equation
+            (mu / (rho * mean_velocity)) # Navier-Stokes equation
+        )
 
-        source_term = source / mean_velocity if params.dimless else source
+        source_term = source / mean_velocity # if params.dimless else source
 
-        dt_cell = dt * mean_velocity if params.dimless else dt
+        dt_cell = dt * mean_velocity # if params.dimless else dt
         
         theta_PDE = torch.tensor(
             [
@@ -206,18 +202,11 @@ class CFDdatasetBase:
         
         mesh["sigma"] = torch.from_numpy(np.array(mesh["sigma"])).view(1,-1)
         
-        if params.dimless:
-            mesh["uvp_dim"] = torch.tensor(
-                [[[mean_velocity, mean_velocity, (mean_velocity**2)]]],
-                device=mesh_pos.device,
-                dtype=torch.float32,
-            ).view(1,-1)
-
-        else:
-            mesh["uvp_dim"] = (
-                torch.tensor([1, 1, 1], device=mesh_pos.device, dtype=torch.float32)
-                .view(1,-1)
-            )
+        mesh["uvp_dim"] = torch.tensor(
+            [[[mean_velocity, mean_velocity, (mean_velocity**2)]]],
+            device=mesh_pos.device,
+            dtype=torch.float32,
+        ).view(1,-1)
 
         return mesh, U_in
 
@@ -235,59 +224,49 @@ class CFDdatasetBase:
             L,
         ) = CFDdatasetBase.select_PDE_coef(theta_PDE_list)
         
-        # L = torch.maximum(
-        #     torch.tensor(L, dtype=torch.float32),
-        #     CFDdatasetBase.calc_charactisc_length(mesh)
-        # )
-        
         mesh["mean_u"] = torch.tensor(mean_u, dtype=torch.float32)
         mesh["rho"] = torch.tensor(rho, dtype=torch.float32)
         mesh["mu"] = torch.tensor(mu, dtype=torch.float32)
         mesh["source"] = torch.tensor(source, dtype=torch.float32)
         mesh["aoa"] = torch.tensor(aoa, dtype=torch.float32)
+        mesh["dt"] = torch.tensor(dt, dtype=torch.float32)
         mesh["L"] = torch.tensor(L, dtype=torch.float32)
         mesh["Re"] = torch.tensor(rho * mean_u * L, dtype=torch.float32) / \
             mu if mu!=0 else torch.tensor(0, dtype=torch.float32)
-            
-        # 注意这里乘以了雷诺数倒数，则应注意在BC.JSON中给定的dt值，最好是1
-        mesh["dt"] = torch.tensor(dt, dtype=torch.float32)*(1./mesh["Re"])
         
         (
             mesh,
             U_inlet,
-        ) = CFDdatasetBase.set_PDE_theta(
+        ) = CFDdatasetBase.set_theta_PDE(
             mesh, params, mean_u, rho, mu, source, aoa, dt, L
         )
 
         return mesh, mean_u, U_inlet
 
     @staticmethod
-    def calc_WLSQ_A_B_normal_matrix(mesh, order, dual_edge=False):
+    def calc_WLSQ_A_B_normal_matrix(mesh, order):
 
         if not "A_node_to_node" in mesh.keys():
             
             """>>> compute WLSQ node to node left A matrix >>>"""
             mesh_pos = mesh["node|pos"]
-            edge_index = mesh["support_edge"].long()
-
-            if dual_edge:
-                outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1]
-            else:
-                outdegree_node_index = torch.cat((edge_index[0], edge_index[1]), dim=0)
-                indegree_node_index = torch.cat((edge_index[1], edge_index[0]), dim=0)
+            face_node_x = mesh["face_node_x"].long()
+            support_edge = mesh["support_edge"].long()
 
             """ >>> compute WLSQ node to node left A matrix >>> """
-            (A_node_to_node, two_way_B_node_to_node) = compute_normal_matrix(
+            (A_node_to_node, two_way_B_node_to_node, single_way_B_node_to_node) = compute_normal_matrix(
                 order=order,
                 mesh_pos=mesh_pos,
-                outdegree=outdegree_node_index,
-                indegree=indegree_node_index,
+                edge_index=face_node_x, # 默认应该是仅包含1阶邻居点+构成共点的单元的所有点
+                extra_edge_index=support_edge, # 额外的模板。例如内部点指向边界点
+                periodic_idx=None,
             )
             
             mesh["A_node_to_node"] = A_node_to_node.to(torch.float32)
-            mesh["B_node_to_node"] = (
+            mesh["single_B_node_to_node"] = (
                 torch.chunk(two_way_B_node_to_node, 2, dim=0)[0]
             ).to(torch.float32)
+            mesh["extra_B_node_to_node"] = single_way_B_node_to_node.to(torch.float32)
             """ <<< compute WLSQ node to node right B matrix<<< """
 
         return mesh
@@ -456,87 +435,88 @@ class CFDdatasetBase:
                        (node_type==NodeType.OUTFLOW)|
                        (node_type==NodeType.PRESS_POINT)|
                        (node_type==NodeType.IN_WALL)).squeeze()
-            node_index = torch.arange(mesh_pos.shape[0])
+
             
             ''' including other boundary points '''
+            # node_index = torch.arange(mesh_pos.shape[0])
             # BC_edge_index = knn(x=mesh_pos, y=mesh_pos[BC_mask], k=BC_interal_neigbors)
             # filter_self_loop = (BC_edge_index[1]==node_index[BC_mask][BC_edge_index[0]]).squeeze()
             # BC_edge_index = torch.stack((BC_edge_index[1], node_index[BC_mask][BC_edge_index[0]]), dim=0)
             # BC_edge_index = BC_edge_index[:,~filter_self_loop]
-            # BC_edge_index = torch.unique(BC_edge_index.sort(dim=0)[0],dim=1)
+            # BC_edge_index = BC_edge_index[:,~(BC_edge_index[0]==BC_edge_index[1])]
             ''' including other boundary points '''
             
             ''' exclude other boundary points '''
-            BC_edge_index = knn(x=mesh_pos[~BC_mask], y=mesh_pos[BC_mask], k=BC_interal_neigbors)
-            BC_edge_index = torch.stack((node_index[~BC_mask][BC_edge_index[1]], node_index[BC_mask][BC_edge_index[0]]), dim=0)
-            BC_edge_index = torch.unique(BC_edge_index.sort(dim=0)[0],dim=1)
+            # node_index = torch.arange(mesh_pos.shape[0])
+            # BC_edge_index = knn(x=mesh_pos[~BC_mask], y=mesh_pos[BC_mask], k=BC_interal_neigbors)
+            # BC_edge_index = torch.stack((node_index[~BC_mask][BC_edge_index[1]], node_index[BC_mask][BC_edge_index[0]]), dim=0)
+            # BC_edge_index = BC_edge_index[:,~(BC_edge_index[0]==BC_edge_index[1])]
             ''' exclude other boundary points '''
-            
-            edge_index_ext1 = []
-            for k in range(1, k_hop+1):
-                edge_index_ext1.append(build_k_hop_edge_index(face_node, k=k))
-            edge_index_ext1 = torch.cat((edge_index_ext1), dim=1)
-        
-            support_edge = torch.cat((
-                face_node_x, 
-                edge_index_ext1,
-                BC_edge_index,
-            ), dim=1)
-            support_edge = torch.unique(support_edge.sort(dim=0)[0],dim=1)
 
+            ''' only internal node to boundary node edge '''
+            # extra_edge_index = []
+            # for k in range(1, k_hop+1):
+            #     extra_edge_index.append(build_k_hop_edge_index(torch.cat((face_node,face_node.flip(0)),dim=1),k=k))
+            # extra_edge_index = torch.cat((extra_edge_index), dim=1) # 此时刚出k-hop是包含所有内部边的且dual edge的
+            # extra_edge_index = extra_edge_index[:,
+            #                                     (BC_mask[extra_edge_index[0]]&(~BC_mask[extra_edge_index[1]]))|\
+            #                                     (BC_mask[extra_edge_index[1]]&(~BC_mask[extra_edge_index[0]]))|\
+            #                                     (BC_mask[extra_edge_index[0]]&(BC_mask[extra_edge_index[1]]))
+            # ] # 先选出仅为内部指向边界或者边界指向内部的边
+            # extra_edge_index = torch.unique(extra_edge_index[:,~(extra_edge_index[0]==extra_edge_index[1])].sort(0)[0],dim=1) # 排除自环然后收缩为单向边
+            
+            # extra_edge_index_mirror = extra_edge_index.flip(0) 
+            # internal_to_boundary = torch.where(
+            #     BC_mask[extra_edge_index[0]][None,].repeat(2,1),extra_edge_index_mirror,extra_edge_index
+            # ) # 然后调整指向，保证只有内部点（dim=0的0）指向边界点（dim=0的1）
+            ''' only internal node to boundary node edge '''
+            
+            ''' 全局调用k-hop edge '''
+            extra_edge_index = []
+            for k in range(1, k_hop+1):
+                extra_edge_index.append(build_k_hop_edge_index(torch.cat((face_node,face_node.flip(0)),dim=1),k=k))
+            extra_edge_index = torch.cat((extra_edge_index), dim=1) # 此时刚出k-hop是包含所有内部边的且dual edge的
+            # extra_edge_index = extra_edge_index[:,~(BC_mask[extra_edge_index[0]]&(BC_mask[extra_edge_index[1]]))] # 先排除边界指向边界的边ss
+            extra_edge_index_unique = torch.unique(
+                extra_edge_index[:,~(extra_edge_index[0]==extra_edge_index[1])].sort(0)[0],
+                dim=1
+            ) # 排除自环然后收缩为单向边
+
+            mesh["face_node_x"] = torch.cat((face_node_x, extra_edge_index_unique), dim=1)
+            mesh["support_edge"] = torch.tensor([[0,1],[1,0]]).to(mesh_pos.device) # 2025.5.30:临时解决方案，现在放弃使用extra_edge模板了，直接全局k-hop放入face_node_x中
+            ''' 全局调用k-hop edge '''
+            
             ''' 检查模板并绘制'度'的分布 '''
-            in_degree = pyg_utils.degree(support_edge[1], num_nodes=mesh_pos.shape[0])
-            out_degree = pyg_utils.degree(support_edge[0], num_nodes=mesh_pos.shape[0])
-            node_degree = in_degree + out_degree
+            # # start plotting
+            # support_edge = torch.cat((
+            #     face_node_x, 
+            #     internal_to_boundary
+            # ), dim=1)
+            # in_degree = pyg_utils.degree(support_edge[1], num_nodes=mesh_pos.shape[0])
+            # out_degree = pyg_utils.degree(support_edge[0], num_nodes=mesh_pos.shape[0])
+            # node_degree = in_degree + out_degree
+            # print("Degree max, mean ,min:", node_degree.max(), node_degree.mean(), node_degree.min())
             
-            if order=="1st":
-                fix_mask = (node_degree <= 4).squeeze()
-                find_extra_nb = knn(x=mesh_pos[~fix_mask], y=mesh_pos[fix_mask], k=6)
-                ext_edge_index = torch.stack((node_index[~fix_mask][find_extra_nb[1]], node_index[fix_mask][find_extra_nb[0]]), dim=0)
-                support_edge = torch.cat((support_edge, ext_edge_index), dim=1)
-                
-            elif order=="2nd":
-                fix_mask = (node_degree <= 4).squeeze()
-                find_extra_nb = knn(x=mesh_pos[~fix_mask], y=mesh_pos[fix_mask], k=8)
-                ext_edge_index = torch.stack((node_index[~fix_mask][find_extra_nb[1]], node_index[fix_mask][find_extra_nb[0]]), dim=0)
-                support_edge = torch.cat((support_edge, ext_edge_index), dim=1)
-                
-            elif order=="3rd":
-                fix_mask = (node_degree <= 6).squeeze()
-                find_extra_nb = knn(x=mesh_pos[~fix_mask], y=mesh_pos[fix_mask], k=13)
-                ext_edge_index = torch.stack((node_index[~fix_mask][find_extra_nb[1]], node_index[fix_mask][find_extra_nb[0]]), dim=0)
-                support_edge = torch.cat((support_edge, ext_edge_index), dim=1)
-                
-            elif order=="4th":
-                fix_mask = (node_degree <= 8).squeeze()
-                find_extra_nb = knn(x=mesh_pos[~fix_mask], y=mesh_pos[fix_mask], k=21)
-                ext_edge_index = torch.stack((node_index[~fix_mask][find_extra_nb[1]], node_index[fix_mask][find_extra_nb[0]]), dim=0)
-                support_edge = torch.cat((support_edge, ext_edge_index), dim=1)
- 
-            in_degree = pyg_utils.degree(support_edge[1], num_nodes=mesh_pos.shape[0])
-            out_degree = pyg_utils.degree(support_edge[0], num_nodes=mesh_pos.shape[0])
-            node_degree = in_degree + out_degree
-            print("Degree max, mean ,min:", node_degree.max(), node_degree.mean(), node_degree.min())
-            
-            # write to file
-            mesh["node_degree"] = node_degree
-            # z_pos = torch.zeros(
-            #     (mesh_pos.shape[0], 1), device=mesh_pos.device, dtype=mesh_pos.dtype
+            # # write to file
+            # mesh["node_degree"] = node_degree
+            # pv_cells_node,pv_cells_type = to_pv_cells_nodes_and_cell_types(
+            #     cells_node=mesh["cells_node"], cells_face=mesh["cells_face"], cells_index=mesh["cells_index"]
             # )
-            # data_to_vtk = {
-            #     "node|pos": torch.cat((mesh_pos, z_pos), dim=1).cpu().numpy(),
-            #     "node|node_degree":node_degree.cpu().numpy(),
-            #     "node|in_degree":in_degree.cpu().numpy(),
-            #     "node|out_degree":out_degree.cpu().numpy(),
-            #     "cells_node": Delaunay(mesh_pos.cpu().numpy()).simplices,
-            # }
-            # write_to_vtk(
-            #     data_to_vtk,
-            #     f"Logger/Grad_test/{mesh['case_name']}_stencil_.vtu",
+            
+            # write_hybrid_mesh_to_vtu_2D(
+            #     mesh_pos=mesh_pos.cpu().numpy(), 
+            #     data={
+            #         f"node|in_degree":in_degree.cpu().numpy(),
+            #         f"node|out_degree":out_degree.cpu().numpy(),
+            #         f"node|node_degree":node_degree.cpu().numpy(),
+            #     }, 
+            #     cells_node=pv_cells_node.cpu().numpy(), 
+            #     cells_type=pv_cells_type.cpu().numpy(),
+            #     filename=f"Logger/Grad_test/degree_vis.vtu",
             # )
             ''' 检查模板并绘制度分布 '''
             
-            mesh["support_edge"] = support_edge
+            # mesh["support_edge"] = internal_to_boundary
             
         return mesh
     
@@ -568,7 +548,6 @@ class CFDdatasetBase:
         mesh, init_uvp_node = CFDdatasetBase.init_env(
             mesh,        
             mean_u=mean_u,
-            dimless=params.dimless,
         )
 
         # start to generate boundary zone
@@ -614,11 +593,10 @@ class H5CFDdataset(Dataset):
         # import all BC.json item into mesh dict
         for key, value in BC_file.items():
             mesh[key] = value
-        mesh["stencil|BC_extra_points"] = BC_file["stencil|BC_extra_points"]
-        mesh["stencil|khops"] = BC_file["stencil|khops"]
-
+        mesh["theta_PDE_bak"] = mesh["theta_PDE"] # 后续生成单独case参数时候theta_PDE会被覆盖，所以备份一下
+        
         # generate all valid theta_PDE combinations
-        theta_PDE = BC_file["solving_params"]
+        theta_PDE = mesh["theta_PDE_bak"]
         theta_PDE_list = (
                     get_param.generate_combinations(
                         U_range=theta_PDE["inlet"],

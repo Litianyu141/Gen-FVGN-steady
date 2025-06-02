@@ -6,12 +6,12 @@
     "surf":["5-8"],
     "stencil|BC_extra_points":4,
     "stencil|khops":2,
-    "solving_params":{
+    "theta_PDE":{
         "unsteady":1,
         "continuity":1,
         "convection":1,
         "grad_p":1,
-        "inlet":[1.5,0.25,15],
+        "inlet":[0.1,0.025,0.3],
         "rho":[1,1,1],
         "mu":[0.001,0.001,0.001],
         "source":[0,0,0],

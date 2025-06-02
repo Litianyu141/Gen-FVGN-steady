@@ -7,14 +7,12 @@ from FVMmodel.FVdiscretization.FVorder import moments_order
 
 def calc_mirror_pos(pos_A, pos_B):
     """
-    计算 pos_A 中每个点相对于 pos_B 中对应位置点的对称点坐标。
-
-    参数:
-        pos_A (torch.Tensor): 形状为 [N, 2] 的张量，表示 N 个二维点。
-        pos_B (torch.Tensor): 形状为 [N, 2] 的张量，表示 N 个二维点。
-
-    返回:
-        torch.Tensor: 形状为 [N, 2] 的张量，表示对称点的坐标。
+    Calculate the mirror position of each point in pos_A with respect to pos_B.
+    Args:
+        pos_A (Tensor): [N, 2] coordinates of N points.
+        pos_B (Tensor): [N, 2] coordinates of N points.
+    Returns:
+        Tensor: [N, 2] coordinates of the mirrored points.
     """
     return 2 * pos_B - pos_A
 
@@ -26,6 +24,17 @@ def calc_replication_ghost(
     pivot_node_index=None,
     mask=None,
 ):
+    """
+    Calculate ghost point values for replication boundary (inflow/outflow).
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        out_node_index (Tensor): [E] Outgoing node indices.
+        pivot_node_index (Tensor): [E] Pivot node indices.
+        mask (Tensor): [E] Boolean mask for valid edges.
+    Returns:
+        Tuple of (pos_diff, phi_diff, receivers_index) for ghost points.
+    """
     if not mask.any():
         return None, None, None
 
@@ -52,6 +61,17 @@ def calc_reflection_ghost(
     pivot_node_index=None,
     mask=None,
 ):
+    """
+    Calculate ghost point values for reflection boundary (wall).
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        out_node_index (Tensor): [E] Outgoing node indices.
+        pivot_node_index (Tensor): [E] Pivot node indices.
+        mask (Tensor): [E] Boolean mask for valid edges.
+    Returns:
+        Tuple of (pos_diff, phi_diff, receivers_index) for ghost points.
+    """
     if not mask.any():
         return None, None, None
 
@@ -79,6 +99,17 @@ def calc_ghost_point(
     node_type=None,
 ):
 
+    """
+    Calculate ghost point differences for all boundary types (wall, inflow, outflow).
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        outdegree_node_index (Tensor): [E] Outgoing node indices.
+        indegree_node_index (Tensor): [E] Incoming node indices.
+        node_type (Tensor): [N] Node type.
+    Returns:
+        Tuple of (pos_diff, phi_diff, receivers_index) for all ghost points.
+    """
     outer_node_type = node_type[outdegree_node_index]
     pivot_node_type = node_type[indegree_node_index]
 
@@ -143,95 +174,115 @@ def calc_ghost_point(
 
 def update_Green_Gauss_Gradient():
 
+    """
+    Placeholder for Green-Gauss gradient update (not implemented).
+    """
     pass
 
 
 def compute_normal_matrix(
     order="1st",
     mesh_pos=None,
-    outdegree=None,
-    indegree=None,
-    dual_edge=True, # 输入的in/outdegree是否是双向的
+    edge_index=None, # 默认应该是仅包含1阶邻居点+构成共点的单元的所有点
+    extra_edge_index=None, # 额外的模板。例如内部点指向边界点
     periodic_idx=None,
 ):
     """
-    Computes the normal matrices A and B for node-based weighted least squares (WLSQ)
-    gradient reconstruction.
-
-    Parameters:
-    - order (str): The order of the reconstruction ('1st', '2nd', '3rd', or '4th').
-    - mesh_pos (torch.Tensor): Tensor of shape [N, D] containing the positions of the mesh nodes.
-    - outdegree (torch.Tensor): Tensor containing the indices of source nodes (outgoing edges).
-    - indegree (torch.Tensor): Tensor containing the indices of target nodes (incoming edges).
-    - dual_edge (bool): If True, the provided outdegree and indegree represent bidirectional edges.
-                        If False, the function constructs bidirectional edges by concatenating
-                        the input edges.
-
+    Compute the normal matrices A and B for node-based weighted least squares (WLSQ) gradient reconstruction.
+    Args:
+        order (str): Order of reconstruction ('1st', '2nd', '3rd', '4th').
+        mesh_pos (Tensor): [N, D] Node positions.
+        edge_index (Tensor): [2, E] Edge indices.
+        extra_edge_index (Tensor, optional): [2, E_extra] Extra edge indices.
+        periodic_idx (Tensor, optional): Periodic boundary indices.
     Returns:
-    - A_node_to_node (torch.Tensor): Normal matrix A for each node.
-    - B_node_to_node (torch.Tensor): Matrix B for each node.
+        Tuple of (A_node_to_node, B_node_to_node[:split_index], B_node_to_node[split_index:]).
     """
     
-    if dual_edge:
-        outdegree_node_index, indegree_node_index = outdegree, indegree
-    else:
-        outdegree_node_index = torch.cat((outdegree, indegree), dim=0)
-        indegree_node_index = torch.cat((indegree, outdegree), dim=0)
-        
-    mesh_pos_diff_on_edge = mesh_pos[outdegree_node_index] - mesh_pos[indegree_node_index]
+    twoway_edge_index = torch.cat((edge_index,edge_index.flip(0)),dim=1)
 
+    if extra_edge_index is not None:
+        complete_edge_index = torch.cat((twoway_edge_index,extra_edge_index),dim=1)
+    else:
+        complete_edge_index = twoway_edge_index
+        
+    split_index = twoway_edge_index.shape[1] # 返回的B中要区分双向的部分和单向的部分
+    
+    outdegree_node_index, indegree_node_index = complete_edge_index[0], complete_edge_index[1]   
+    
+    mesh_pos_diff_on_edge = mesh_pos[outdegree_node_index] - mesh_pos[indegree_node_index]
+    
+    # L_local = scatter_mean(src=mesh_pos_diff_on_edge**2,index=indegree_node_index,dim=0).sqrt()
+    
+    # normaled_mesh_pos_diff_on_edge = mesh_pos_diff_on_edge/(L_local[indegree_node_index])
+    
     (A_node_to_node, B_node_to_node) = moments_order(
         order=order,
         mesh_pos_diff_on_edge=mesh_pos_diff_on_edge,
         indegree_node_index=indegree_node_index,
     )
 
-    # 由于周期边界条件的加入，那么需要将src的A传递给dst的A，B也同理，只不过不在预处理这里传递，在下面求解矩阵的计算中传递
-    if periodic_idx is not None:
-        valid_peridx = periodic_idx[periodic_idx[0]>=0] #  使用-1来屏蔽非周期边界的idx
-        periodic_A = A_node_to_node[valid_peridx[0]] + A_node_to_node[valid_peridx[1]]
-        A_node_to_node[valid_peridx[0]] = periodic_A
-        A_node_to_node[valid_peridx[1]] = periodic_A
+    # # 由于周期边界条件的加入，那么需要将src的A传递给dst的A，B也同理，只不过不在预处理这里传递，在下面求解矩阵的计算中传递
+    # if periodic_idx is not None:
+    #     valid_peridx = periodic_idx[periodic_idx[0]>=0] #  使用-1来屏蔽非周期边界的idx
+    #     periodic_A = A_node_to_node[valid_peridx[0]] + A_node_to_node[valid_peridx[1]]
+    #     A_node_to_node[valid_peridx[0]] = periodic_A
+    #     A_node_to_node[valid_peridx[1]] = periodic_A
     
-    return (A_node_to_node, B_node_to_node)
+    return (A_node_to_node, B_node_to_node[:split_index], B_node_to_node[split_index:])
 
-@torch.compile
+# @torch.compile
 def node_based_WLSQ(
     phi_node=None,
-    edge_index=None,
+    edge_index=None, # 输入的edge_index是否是双向的,注意对于edge_index一定是0-1
+    extra_edge_index=None,
     mesh_pos=None,
-    dual_edge=True, # 输入的edge_index是否是双向的
     order=None,
-    precompute_Moments: list = None,
-    periodic_idx=None,
+    precompute_Moments: list = None, # 应一定包含3个元素，[A, 单向的B，和额外的B（即仅内部点指向边界点）]
+    periodic_idx=None, 
+    rt_cond=False,
 ):
     '''
-    B right-hand sides in precompute_Moments must be SINGLE-WAY
-    on edge
+    Node-based Weighted Least Squares (WLSQ) gradient reconstruction.
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        edge_index (Tensor): [2, E] Edge indices.
+        extra_edge_index (Tensor, optional): [2, E_extra] Extra edge indices.
+        mesh_pos (Tensor): [N, D] Node positions.
+        order (str): Order of reconstruction ('1st', '2nd', '3rd', '4th').
+        precompute_Moments (list, optional): Precomputed [A, B, extra_B] moments.
+        periodic_idx (Tensor, optional): Periodic boundary indices.
+        rt_cond (bool): If True, also return condition number.
+    Returns:
+        nabla_phi_node_lst (Tensor): [N, C, ...] Node gradients (shape depends on order).
+        If rt_cond is True, also returns condition number.
     '''
     # edge_index = knn_graph(mesh_pos, k=9, loop=False)
     if (order is None) or (order not in ["1st", "2nd", "3rd", "4th"]):
         raise ValueError("order must be specified in [\"1st\", \"2nd\", \"3rd\", \"4th\"]")
     
-    if dual_edge:
-        outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1]
+    twoway_edge_index = torch.cat((edge_index,edge_index.flip(0)),dim=1)
+
+    if extra_edge_index is not None:
+        complete_edge_index = torch.cat((twoway_edge_index,extra_edge_index),dim=1)
     else:
-        outdegree_node_index = torch.cat((edge_index[0], edge_index[1]), dim=0)
-        indegree_node_index = torch.cat((edge_index[1], edge_index[0]), dim=0)
+        complete_edge_index = twoway_edge_index
+
+    outdegree_node_index, indegree_node_index = complete_edge_index[0], complete_edge_index[1]   
 
     if precompute_Moments is None:
 
         """node to node contribution"""
-        (A_node_to_node, two_way_B_node_to_node) = compute_normal_matrix(
+        (A_node_to_node, two_way_B_node_to_node,single_way_B_node_to_node) = compute_normal_matrix(
             order=order,
             mesh_pos=mesh_pos,
-            outdegree=outdegree_node_index,
-            indegree=indegree_node_index,
-            dual_edge=False if dual_edge else True,
+            edge_index=edge_index, # 默认应该是仅包含1阶邻居点+构成共点的单元的所有点
+            extra_edge_index=extra_edge_index, # 额外的模板。例如内部点指向边界点
         )
+        B_node_to_node = torch.cat((two_way_B_node_to_node,single_way_B_node_to_node),dim=0)
         """node to node contribution"""
-
-        phi_diff_on_edge = two_way_B_node_to_node * (
+        
+        phi_diff_on_edge = B_node_to_node * (
             (phi_node[outdegree_node_index] - phi_node[indegree_node_index]).unsqueeze(
                 1
             )
@@ -243,7 +294,7 @@ def node_based_WLSQ(
 
     else:
         """use precomputed moments"""
-        A_node_to_node, Oneway_B_node_to_node = precompute_Moments
+        A_node_to_node, Oneway_B_node_to_node, extra_single_way_B_node_to_node = precompute_Moments
 
         half_dim = Oneway_B_node_to_node.shape[0]
         
@@ -257,8 +308,10 @@ def node_based_WLSQ(
         
         if od >=3 :
             two_way_B_node_to_node[half_dim:,5:9]*= -1
-            
-        phi_diff_on_edge = two_way_B_node_to_node * (
+        
+        B_node_to_node = torch.cat((two_way_B_node_to_node, extra_single_way_B_node_to_node),dim=0)
+        
+        phi_diff_on_edge = B_node_to_node * (
             (phi_node[outdegree_node_index] - phi_node[indegree_node_index]).unsqueeze(
                 1
             )
@@ -271,12 +324,12 @@ def node_based_WLSQ(
             dim_size=mesh_pos.shape[0],
         )
         
-    # 处理周期边界条件，假如A矩阵已经处理好了，这里来处理B矩阵
-    if periodic_idx is not None:
-        valid_peridx = periodic_idx[periodic_idx[0]>=0] #  使用-1来屏蔽非周期边界的idx
-        periodic_B = B_phi_node_to_node[valid_peridx[0]] + B_phi_node_to_node[valid_peridx[1]]
-        B_phi_node_to_node[valid_peridx[0]] = periodic_B
-        B_phi_node_to_node[valid_peridx[1]] = periodic_B
+    # # 处理周期边界条件，假如A矩阵已经处理好了，这里来处理B矩阵
+    # if periodic_idx is not None:
+    #     valid_peridx = periodic_idx[periodic_idx[0]>=0] #  使用-1来屏蔽非周期边界的idx
+    #     periodic_B = B_phi_node_to_node[valid_peridx[0]] + B_phi_node_to_node[valid_peridx[1]]
+    #     B_phi_node_to_node[valid_peridx[0]] = periodic_B
+    #     B_phi_node_to_node[valid_peridx[1]] = periodic_B
     
     # 行归一化
     row_norms = torch.norm(A_node_to_node, p=2, dim=2, keepdim=True)
@@ -308,7 +361,10 @@ def node_based_WLSQ(
     """ fourth method"""
     # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_node_to_node_x)
 
-    return nabla_phi_node_lst
+    if rt_cond:
+        return nabla_phi_node_lst,torch.linalg.cond(A_normalized) 
+    else:
+        return nabla_phi_node_lst
 
 
 def node_based_WLSQ_2nd_order(
@@ -317,15 +373,22 @@ def node_based_WLSQ_2nd_order(
     mesh_pos=None,
     dual_edge=True,
 ):
-    # edge_index = knn_graph(mesh_pos, k=9, loop=False)
-
+    """
+    Node-based WLSQ gradient reconstruction (2nd order).
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        edge_index (Tensor): [2, E] Edge indices.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        dual_edge (bool): If True, use bidirectional edges.
+    Returns:
+        nabla_phi_node_lst (Tensor): [N, C, 5] Gradients and second derivatives.
+    """
     if dual_edge:
-        outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1]
+        outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1] # edge_index must be 0-1
     else:
         outdegree_node_index = torch.cat((edge_index[0], edge_index[1]), dim=0)
         indegree_node_index = torch.cat((edge_index[1], edge_index[0]), dim=0)
 
-    """node to node contribution"""
     mesh_pos_diff_on_edge = (
         mesh_pos[outdegree_node_index] - mesh_pos[indegree_node_index]
     )
@@ -353,7 +416,6 @@ def node_based_WLSQ_2nd_order(
     A_node_to_node = scatter_add(
         left_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
-    """node to node contribution"""
 
     phi_diff_on_edge = (
         weight_node_to_node
@@ -395,6 +457,16 @@ def node_based_WLSQ_3rd_order(
     mesh_pos=None,
     dual_edge=True,
 ):
+    """
+    Node-based WLSQ gradient reconstruction (3rd order).
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        edge_index (Tensor): [2, E] Edge indices.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        dual_edge (bool): If True, use bidirectional edges.
+    Returns:
+        nabla_phi_node_lst (Tensor): [N, C, 9] Gradients and higher derivatives.
+    """
     # edge_index = knn_graph(mesh_pos, k=9, loop=False)
     if dual_edge:
         outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1]
@@ -473,6 +545,16 @@ def node_based_WLSQ_4th_order(
     mesh_pos=None,
     dual_edge=True,
 ):
+    """
+    Node-based WLSQ gradient reconstruction (4th order).
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        edge_index (Tensor): [2, E] Edge indices.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        dual_edge (bool): If True, use bidirectional edges.
+    Returns:
+        nabla_phi_node_lst (Tensor): [N, C, 14] Gradients and higher derivatives.
+    """
     # edge_index = knn_graph(mesh_pos, k=9, loop=False)
     if dual_edge:
         outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1]
@@ -567,17 +649,29 @@ def Moving_LSQ(
     mask_boundary=None,
 ):
  
+    """
+    Moving Least Squares (MLS) gradient reconstruction.
+    Args:
+        phi_node (Tensor): [N, C] Node values.
+        edge_index (Tensor): [2, E] Edge indices.
+        mesh_pos (Tensor): [N, 2] Node positions.
+        dual_edge (bool): If True, use bidirectional edges.
+        order (str): Order of reconstruction.
+        precompute_Moments (list, optional): Precomputed moments.
+        mask_boundary (Tensor, optional): Boundary mask.
+    Returns:
+        nabla_phi_node_lst (Tensor): [N, C, ...] Node gradients (shape depends on order).
+    """
     if dual_edge:
         outdegree_node_index, indegree_node_index = edge_index[0], edge_index[1]
     else:
         outdegree_node_index = torch.cat((edge_index[0], edge_index[1]), dim=0)
         indegree_node_index = torch.cat((edge_index[1], edge_index[0]), dim=0)
 
-    """node to node contribution"""
     mesh_pos_diff_on_edge = (
         mesh_pos[outdegree_node_index] - mesh_pos[indegree_node_index]
     )
-    # In MLS, we need to first calculate the weight matrix
+    # In MLS, first calculate the weight matrix
     radius = torch.norm(mesh_pos_diff_on_edge, dim=1, keepdim=True)
     max_node_radius = scatter_max(
         radius, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
@@ -604,7 +698,6 @@ def Moving_LSQ(
     A_node_to_node = scatter_add(
         left_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
-    """node to node contribution"""
 
     phi_on_edge = (
         (

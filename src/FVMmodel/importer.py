@@ -79,59 +79,57 @@ class NNmodel(nn.Module):
 
         return graph
     
-    # def normalize_graph_features(self, x, batch):
-    #     # 检查输入张量和 batch 索引的形状
-    #     assert x.dim() == 2, "Input tensor x should be 2-dimensional"
-    #     assert batch.dim() == 1, "Batch tensor should be 1-dimensional"
-    #     assert x.size(0) == batch.size(0), "The first dimension of x and batch should be the same"
-
-    #     mean = scatter_mean(x, batch, dim=0)
-    #     residual = x - mean[batch]
-    #     var = scatter_mean(residual**2, batch, dim=0)
-    #     std = torch.sqrt(var)
-    #     x = residual / (std[batch] + 1e-8)
-    #     # x = residual
-        
-    #     return x
-    
     def normalize_graph_features(self, x, batch):
         # 检查输入张量和 batch 索引的形状
         assert x.dim() == 2, "Input tensor x should be 2-dimensional"
         assert batch.dim() == 1, "Batch tensor should be 1-dimensional"
         assert x.size(0) == batch.size(0), "The first dimension of x and batch should be the same"
 
-        # 计算每个 batch 的最小值和最大值
-        min_val = scatter_min(x, batch, dim=0)[0]
-        max_val = scatter_max(x, batch, dim=0)[0]
-        # 计算每个元素的归一化值
-        # range_val = max_val - min_val
-        # x = ((x - min_val[batch]) / (range_val[batch] + 1e-8))*10.
+        mean = scatter_mean(x, batch, dim=0)
+        residual = x - mean[batch]
+        var = scatter_mean(residual**2, batch, dim=0)
+        std = torch.sqrt(var)
+        x = residual / (std[batch] + 1e-8)
+        # x = residual
         
-        # 这里特别为泰勒格林涡算例去掉了除以max-min，使得神经网络可以感知到流场只在decaying
-        # update: 这里不能去掉正则化，因为如果Taylor-Green一直在衰减，会导致输入的值特别小，导致模型无法训练
-        x = x - min_val[batch]
-
         return x
+    
+    # def normalize_graph_features(self, x, batch):
+    #     # 检查输入张量和 batch 索引的形状
+    #     assert x.dim() == 2, "Input tensor x should be 2-dimensional"
+    #     assert batch.dim() == 1, "Batch tensor should be 1-dimensional"
+    #     assert x.size(0) == batch.size(0), "The first dimension of x and batch should be the same"
+
+    #     # 计算每个 batch 的最小值和最大值
+    #     min_val = scatter_min(x, batch, dim=0)[0]
+    #     max_val = scatter_max(x, batch, dim=0)[0]
+    #     # 计算每个元素的归一化值
+    #     range_val = max_val - min_val
+    #     x = ((x - min_val[batch]) / (range_val[batch] + 1e-8))*10.
+        
+    #     # 这里特别为泰勒格林涡算例去掉了除以max-min，使得神经网络可以感知到流场只在decaying
+    #     # update: 这里不能去掉正则化，因为如果Taylor-Green一直在衰减，会导致输入的值特别小，导致模型无法训练
+    #     x = x - min_val[batch]
+
+    #     return x
     
     def update_x_attr(
         self,
-        graph,
+        graph_node,
+        graph_Index,
     ):
 
-        if graph.norm_uvp: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
-            graph.x[:,:self.node_phi_size] = self.normalize_graph_features(
-                graph.x[:,:self.node_phi_size], 
-                graph.batch
-            )
-            graph.norm_uvp=False
+        if graph_node.norm_uvp: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
+            graph_node.x[:,:self.node_phi_size] = self.normalize_graph_features(graph_node.x[:,:self.node_phi_size], graph_node.batch)
+            graph_node.norm_uvp=False
         else:
-            raise ValueError("The graph node features have already been normalized, please check the graph.norm_uvp")
+            raise ValueError(" src/FVMmodel/importer.py The graph node features have already been normalized, please check the graph.norm_uvp")
         
-        if graph.norm_global: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
-            graph.x[:,self.node_phi_size:] = self.node_norm(graph.x[:,self.node_phi_size:])
-            graph.norm_global=False
+        if graph_node.norm_global: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
+            graph_node.x[:,self.node_phi_size:] = self.node_norm(graph_node.x[:,self.node_phi_size:])
+            graph_node.norm_global=False
         
-        return graph
+        return graph_node
 
     def update_edge_attr(
         self,
@@ -142,12 +140,8 @@ class NNmodel(nn.Module):
 
         return graph
 
-    def _enforce_boundary_condition(self, uvp, graph_node, with_periodic=False):
-        
-        # 先施加周期边界条件
-        if with_periodic:
-            uvp[graph_node.periodic_idx[1]] = uvp[graph_node.periodic_idx[0]]
-        
+    def _enforce_boundary_condition(self, uvp, graph_node):
+
         mask_dirichlet  = (
             (graph_node.node_type == NodeType.WALL_BOUNDARY) | 
             (graph_node.node_type == NodeType.INFLOW)|
@@ -179,7 +173,8 @@ class NNmodel(nn.Module):
 
             # update normalized value
             graph_node = self.update_x_attr(
-                graph=graph_node,
+                graph_node=graph_node,
+                graph_Index=graph_Index,
             )
 
             graph_node = self.update_edge_attr(
@@ -188,12 +183,12 @@ class NNmodel(nn.Module):
 
             uvp_new_node = self.simulator(graph_node, graph_edge, graph_cell)
             
-            # 临时处理以下，将带有periodic的edge_index替换回原来的只有内部域的edge_index， 具体请查看src/Load_mesh/Graph_loader.py
-            graph_node.edge_index = graph_node.edge_index_interior
+            # # 临时处理以下，将带有periodic的edge_index替换回原来的只有内部域的edge_index， 具体请查看src/Load_mesh/Graph_loader.py
+            # graph_node.edge_index = graph_node.edge_index_interior
             
             uvp_new_node = torch.tanh(uvp_new_node/10)*10
             
-            uvp_new_node = self._enforce_boundary_condition(uvp_new_node, graph_node, with_periodic=True)
+            uvp_new_node = self._enforce_boundary_condition(uvp_new_node, graph_node)
             
             # explicit / implicit / IMEX integration schemes
             if self.params.integrator == "explicit":
@@ -228,7 +223,7 @@ class NNmodel(nn.Module):
             )
             
             smoothed_uvp_new_node = self._enforce_boundary_condition(
-                smoothed_uvp_new_node, graph_node, with_periodic=False
+                smoothed_uvp_new_node, graph_node
             )
             
             # reverse dimless for storing

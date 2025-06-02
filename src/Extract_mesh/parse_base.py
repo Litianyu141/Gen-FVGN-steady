@@ -4,17 +4,9 @@ file_dir = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(file_dir)
 import numpy as np
 import torch
-from Extract_mesh.parse_to_h5 import (
-    NodeType,
-)
 import os
 import math
-import random
-from contextlib import ExitStack
-from math import ceil
-from torch_scatter import scatter
 import sys
-import pyvista as pv
 from Post_process.to_vtk import write_hybrid_mesh_to_vtu_2D,write_to_vtk,to_pv_cells_nodes_and_cell_types
 
 # 将输出缓冲区设置为0
@@ -318,6 +310,3 @@ class Basemanager:
             cells_type=pv_cells_type.cpu().numpy(),
             filename=file_name
         )
-
-        print("Mesh saved as", file_name)
-

@@ -5,6 +5,11 @@
 @Version :   2.0
 @Contact :   lty1040808318@163.com
 """
+import sys
+import os
+
+file_dir = os.path.dirname(os.path.dirname(__file__))
+sys.path.append(file_dir)
 import numpy as np
 import torch
 from torch_scatter import scatter
@@ -47,6 +52,62 @@ def polygon_area(vertices):
     y = vertices[:, 1]
     return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
 
+def sort_vertices_ccw(mesh_pos, face_center, cells_node, cells_face, cells_index, centroid):
+    """
+    使用中心点对顶点和面进行逆时针排序（完全向量化版本）
+    
+    参数:
+    mesh_pos: 顶点坐标张量，维度=[N,2] (对于cells_node排序时使用)
+    face_center: 面中心坐标张量，维度=[M,2] (对于cells_face排序时使用)
+    cells_node: 构成多边形的顶点序号张量
+    cells_face: 构成多边形的面序号张量
+    cells_index: 每个顶点/面所属多边形的索引张量
+    centroid: 多边形中心点坐标张量，维度=[C,2]
+    
+    返回:
+    按逆时针排序后的cells_node, cells_face, cells_index
+    """
+    # 使用seperate_domain分离不同类型的单元
+    domain_list = seperate_domain(cells_node, cells_face, cells_index)
+    
+    # 初始化
+    new_cells_node = []
+    new_cells_face = []
+    re_cells_index = []
+    
+    # 对每种类型的单元分别处理
+    for ct, sub_cells_node, sub_cells_face, sub_cells_index, original_indices in domain_list:
+        if sub_cells_node.size(0) == 0:
+            continue
+        
+        re_cells_index.append(sub_cells_index)
+        
+        # 将sub_cells_node和sub_cells_face reshape为[num_cells, ct]
+        num_cells = sub_cells_node.size(0) // ct
+        cells_node_2d = sub_cells_node.reshape(num_cells, ct)
+        cells_face_2d = sub_cells_face.reshape(num_cells, ct)
+        
+        # 获取每个单元的质心 - 使用传入的centroid
+        cell_centroids = centroid[sub_cells_index.reshape(num_cells, ct)[:, 0]]
+        
+        # 对cells_node进行排序：使用顶点坐标计算角度
+        vertices_coords = mesh_pos[cells_node_2d]  # [num_cells, ct, 2]
+        relative_coords_vertices = vertices_coords - cell_centroids.unsqueeze(1)
+        angles_vertices = torch.atan2(relative_coords_vertices[:, :, 1], relative_coords_vertices[:, :, 0])
+        sorted_indices_vertices = torch.argsort(angles_vertices, dim=1)
+        sorted_cells_node_2d = torch.gather(cells_node_2d, 1, sorted_indices_vertices)
+        
+        # 对cells_face进行单独排序：使用面中心坐标计算角度
+        face_coords = face_center[cells_face_2d]  # [num_cells, ct, 2]
+        relative_coords_faces = face_coords - cell_centroids.unsqueeze(1)
+        angles_faces = torch.atan2(relative_coords_faces[:, :, 1], relative_coords_faces[:, :, 0])
+        sorted_indices_faces = torch.argsort(angles_faces, dim=1)
+        sorted_cells_face_2d = torch.gather(cells_face_2d, 1, sorted_indices_faces)
+        
+        new_cells_node.append(sorted_cells_node_2d.flatten())
+        new_cells_face.append(sorted_cells_face_2d.flatten())
+        
+    return torch.cat(new_cells_node, dim=0), torch.cat(new_cells_face, dim=0), torch.cat(re_cells_index, dim=0)
 
 def find_max_distance(points):
     # 获取点的数量
@@ -85,8 +146,8 @@ def compose_support_face_node_x(cells_type, cells_node):
     for _ in range(cells_type-1):
         cells_node = torch.roll(cells_node.reshape(-1,cells_type), shifts=1, dims=1).reshape(-1)
         face_node_x.append(torch.stack((origin_cells_node, cells_node), dim=0))
-
-    return torch.unique(torch.cat(face_node_x, dim=1).sort(dim=0)[0],dim=1)
+    face_node_x = torch.cat(face_node_x, dim=1)
+    return torch.unique(face_node_x[:,~(face_node_x[0]==face_node_x[1])].sort(dim=0)[0],dim=1)
 
 def compose_support_edge_to_node(cells_type, cells_face, cells_node, offset=None):
     """
@@ -147,6 +208,7 @@ def seperate_domain(cells_node, cells_face, cells_index):
         - cells_node_sub (torch.Tensor): Subset of cells_node for the cell type.
         - cells_face_sub (torch.Tensor): Subset of cells_face for the cell type.
         - cells_index_sub (torch.Tensor): Subset of cells_index for the cell type.
+        - original_indices (torch.Tensor): 原始位置索引，用于恢复顺序
     """
     cells_type_ex = scatter(src=torch.ones_like(cells_index), 
         index=cells_index, 
@@ -158,7 +220,8 @@ def seperate_domain(cells_node, cells_face, cells_index):
     domain_list = []
     for ct in cells_type:
         mask = (cells_type_ex==ct)[cells_index]
-        domain_list.append((ct, cells_node[mask], cells_face[mask], cells_index[mask]))
+        original_indices = torch.where(mask)[0]  # 记录原始位置
+        domain_list.append((ct, cells_node[mask], cells_face[mask], cells_index[mask], original_indices))
         
     return domain_list
 
@@ -223,6 +286,22 @@ def extract_mesh_state(
     face_center_pos = (mesh_pos[face_node[0]] + mesh_pos[face_node[1]]) / 2.0
     dataset["face|face_center_pos"] = face_center_pos
     """ <<<   compute face_center_pos   <<< """
+
+    """>>> ensure cells node and face counterclockwise >>>"""
+    cells_node_ccw, cells_face_ccw, cells_index = sort_vertices_ccw(
+        dataset["node|pos"],
+        dataset["face|face_center_pos"],
+        dataset["cells_node"],
+        dataset["cells_face"],
+        dataset["cells_index"],
+        dataset["cell|centroid"],
+    )
+    dataset["cells_node"] = cells_node_ccw
+    dataset["cells_face"] = cells_face_ccw
+    dataset["cells_index"] = cells_index
+    cells_node = dataset["cells_node"]
+    cells_face = dataset["cells_face"]
+    """<<< ensure cells node and face counterclockwise <<<"""    
     
     """ >>>   assign face type   >>>"""
     face_type = torch.full((face_node.shape[1],),NodeType.NORMAL).long()
@@ -402,12 +481,13 @@ def extract_mesh_state(
     face_node_x=[]
     for domain in domain_list:
         
-        _ct, _cells_node, _cells_face, _cells_index = domain
+        _ct, _cells_node, _cells_face, _cells_index, _ = domain
         
         face_node_x.append(
             compose_support_face_node_x(cells_type=_ct, cells_node=_cells_node)
         )
     face_node_x = torch.cat(face_node_x, dim=1)
+    face_node_x = torch.unique(face_node_x[:,~(face_node_x[0]==face_node_x[1])],dim=1)
     dataset["face_node_x"] = face_node_x
     ''' >>> compute face_node_x <<< '''
     

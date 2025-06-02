@@ -21,7 +21,7 @@ def to_pv_cells_nodes_and_cell_types(cells_node:torch.Tensor,cells_face:torch.Te
     pv_cells_type=[]
     for domain in domain_list:
         
-        _ct, _cells_node, _, _ = domain
+        _ct, _cells_node, _, _, _ = domain
         _cells_node = _cells_node.reshape(-1,_ct)
         num_cells = _cells_node.shape[0]
         _cells_node = torch.cat(
@@ -253,7 +253,7 @@ def write_to_vtk(data: dict, write_file_path):
     writer.SetFileName(write_file_path)
     writer.SetInputData(grid)
     writer.Write()
-    print(f"vtu file saved:{write_file_path}")
+    print(f"VTU file saved at:{write_file_path}")
 
 
 def write_point_cloud_to_vtk(data: dict, write_file_path):
@@ -295,36 +295,153 @@ def write_point_cloud_to_vtk(data: dict, write_file_path):
     writer.SetFileName(write_file_path)
     writer.SetInputData(grid)
     writer.Write()
-    print(f"vtu file saved:[{write_file_path}]")
+    print(f"VTU file saved at:[{write_file_path}]")
 
 
-def write_vtu_file_3D(mesh_pos, cells, point_data_dict, file_path):
+def write_vtu_file_2D_poly_to_tri(mesh_pos, cells, cells_index, point_data_dict, file_path):
+    """
+    写入VTU文件，支持flat格式的cells和cells_index
+    
+    参数:
+    - mesh_pos: 顶点坐标 [N, 3]
+    - cells: flat形式的顶点索引 [M,] - 包含所有单元的顶点索引
+    - cells_index: 单元索引 [M,] - 标记每个顶点属于哪个单元 [0,0,0,1,1,1,1,2,2,2,2,...]
+    - point_data_dict: 顶点数据字典
+    - file_path: 输出文件路径
+    """
     # 创建UnstructuredGrid对象
     unstructured_grid = vtk.vtkUnstructuredGrid()
 
-    # 设置点（顶点）数据
-    points = vtk.vtkPoints()
-    for pos in mesh_pos:
-        points.InsertNextPoint(pos)
-    unstructured_grid.SetPoints(points)
+    # 设置点（顶点）数据将在后面处理，因为我们可能需要添加质心点
 
-    # 设置单元（面片）数据
-    for cell in cells:
-        cell_id_list = vtk.vtkIdList()
-        for point_id in cell:
-            cell_id_list.InsertNextId(point_id)
-        unstructured_grid.InsertNextCell(vtk.VTK_POLYGON, cell_id_list)
+    # 从flat格式重构单元数据
+    if isinstance(cells, np.ndarray):
+        cells = cells.astype(int)
+    if isinstance(cells_index, np.ndarray):
+        cells_index = cells_index.astype(int)
+    
+    # 找到所有唯一的单元ID
+    unique_cell_ids = np.unique(cells_index)
+    
+    # 为了添加质心点，我们需要扩展顶点列表
+    extended_points = vtk.vtkPoints()
+    # 先复制原有顶点
+    for pos in mesh_pos:
+        extended_points.InsertNextPoint(pos)
+    
+    current_point_id = len(mesh_pos)  # 下一个可用的点ID
+    
+    # 为每个单元构建顶点列表
+    for cell_id in unique_cell_ids:
+        # 找到属于当前单元的所有顶点
+        cell_vertex_mask = (cells_index == cell_id)
+        cell_vertices = cells[cell_vertex_mask]
+        num_vertices = len(cell_vertices)
+        
+        if num_vertices == 3:
+            # 三角形单元，直接添加
+            cell_id_list = vtk.vtkIdList()
+            for point_id in cell_vertices:
+                cell_id_list.InsertNextId(int(point_id))
+            unstructured_grid.InsertNextCell(vtk.VTK_TRIANGLE, cell_id_list)
+            
+        elif num_vertices == 4:
+            # 四边形单元，保留为四边形
+            cell_id_list = vtk.vtkIdList()
+            for point_id in cell_vertices:
+                cell_id_list.InsertNextId(int(point_id))
+            unstructured_grid.InsertNextCell(vtk.VTK_QUAD, cell_id_list)
+            
+        else:
+            # polygon单元，拆分为三角形
+            # 计算质心
+            cell_coords = mesh_pos[cell_vertices]
+            centroid = np.mean(cell_coords, axis=0)
+            
+            # 添加质心点
+            centroid_id = current_point_id
+            extended_points.InsertNextPoint(centroid)
+            current_point_id += 1
+            
+            # 将polygon拆分为三角形：每相邻两个顶点与质心构成一个三角形
+            for i in range(num_vertices):
+                next_i = (i + 1) % num_vertices
+                
+                # 创建三角形：当前顶点 -> 下一个顶点 -> 质心
+                triangle = vtk.vtkIdList()
+                triangle.InsertNextId(int(cell_vertices[i]))
+                triangle.InsertNextId(int(cell_vertices[next_i]))
+                triangle.InsertNextId(centroid_id)
+                
+                unstructured_grid.InsertNextCell(vtk.VTK_TRIANGLE, triangle)
+    
+    # 更新网格的点数据
+    unstructured_grid.SetPoints(extended_points)
 
     # 设置点数据（例如法向量或其他数据）
     if point_data_dict is not None:
+        # 计算需要为质心插值的数据
+        num_original_points = len(mesh_pos)
+        num_total_points = extended_points.GetNumberOfPoints()
+        
         for name, data_array in point_data_dict.items():
             vtk_data_array = vtk.vtkDoubleArray()
-            vtk_data_array.SetNumberOfComponents(
-                len(data_array[0])
-            )  # 根据数据维度设置组件数
-            vtk_data_array.SetName(name)  # 使用字典的键作为数据数组的名称
-            for data in data_array:
-                vtk_data_array.InsertNextTuple(data)
+            
+            # 处理标量和向量数据
+            if len(data_array.shape) == 1:
+                # 标量数据
+                vtk_data_array.SetNumberOfComponents(1)
+                
+                # 为质心插值数据
+                extended_data = np.zeros(num_total_points)
+                extended_data[:num_original_points] = data_array
+                
+                # 为每个质心计算插值值
+                current_point_id = num_original_points
+                for cell_id in unique_cell_ids:
+                    cell_vertex_mask = (cells_index == cell_id)
+                    cell_vertices = cells[cell_vertex_mask]
+                    num_vertices = len(cell_vertices)
+                    
+                    if num_vertices > 4:  # 只有polygon需要质心
+                        # 使用该polygon顶点的平均值作为质心的值
+                        centroid_value = np.mean(data_array[cell_vertices])
+                        extended_data[current_point_id] = centroid_value
+                        current_point_id += 1
+                
+                # 插入数据
+                for data in extended_data:
+                    vtk_data_array.InsertNextValue(float(data))
+                    
+            else:
+                # 向量数据
+                vtk_data_array.SetNumberOfComponents(data_array.shape[1] if len(data_array.shape) > 1 else 1)
+                
+                # 为质心插值数据
+                extended_data = np.zeros((num_total_points, data_array.shape[1]))
+                extended_data[:num_original_points] = data_array
+                
+                # 为每个质心计算插值值
+                current_point_id = num_original_points
+                for cell_id in unique_cell_ids:
+                    cell_vertex_mask = (cells_index == cell_id)
+                    cell_vertices = cells[cell_vertex_mask]
+                    num_vertices = len(cell_vertices)
+                    
+                    if num_vertices > 4:  # 只有polygon需要质心
+                        # 使用该polygon顶点的平均值作为质心的值
+                        centroid_value = np.mean(data_array[cell_vertices], axis=0)
+                        extended_data[current_point_id] = centroid_value
+                        current_point_id += 1
+                
+                # 插入数据
+                for data in extended_data:
+                    if hasattr(data, '__len__'):
+                        vtk_data_array.InsertNextTuple(data)
+                    else:
+                        vtk_data_array.InsertNextValue(float(data))
+                        
+            vtk_data_array.SetName(name)
             unstructured_grid.GetPointData().AddArray(vtk_data_array)
 
     # 写入VTU文件
@@ -397,7 +514,7 @@ def write_hybrid_mesh_to_vtu_2D(mesh_pos, data, cells_node, cells_type=None, fil
     
     # 写入到 vtu 文件
     grid.save(filename)
-    print(f"文件已保存到 {filename}")
+    print(f"VTU file saved at {filename}")
     
     
 # ############### Grid SDF ####################
@@ -700,7 +817,7 @@ def write_vtp_file(mesh_pos, edge_index, output_filename):
     writer.SetFileName(output_filename)
     writer.SetInputData(poly_data)
     writer.Write()
-    print(f"VTP 文件已保存到：{output_filename}")
+    print(f"VTP file saved at: {output_filename}")
 
 
 if __name__ == "__main__":

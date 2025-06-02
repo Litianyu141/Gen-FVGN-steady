@@ -160,28 +160,33 @@ def detect_var_loacation(fluid_zone=None):
     x_dir_velocity_var_location = 0
     y_dir_velocity_var_location = 0
     pressure_var_location = 0
+    rho = 1.0  # 默认值
+    mu = 0.001  # 默认值
 
     for key, value in fluid_zone.items():
         count_var = key.split("|")
         if len(count_var) >= 2:
             if count_var[0] == "node":
-                _VARIABLES_NAME.append('"' + count_var[1] + '"' + "\n")
+                _VARIABLES_NAME.append('"node|' + count_var[1] + '"' + "\n")
                 _NODAL_VAR.append(key)
 
             elif count_var[0] == "cell":
-                _VARIABLES_NAME.append('"' + count_var[1] + '"' + "\n")
+                _VARIABLES_NAME.append('"cell|' + count_var[1] + '"' + "\n")
                 _CELLCENTERED_VAR.append(key)
 
-            if count_var[1] == "U":
+            # 检测特殊变量位置（不区分大小写）
+            var_name_upper = count_var[1].upper()
+            if var_name_upper == "U":
                 x_dir_velocity_var_location = _VAR_sequence
-            elif count_var[1] == "V":
+            elif var_name_upper == "V":
                 y_dir_velocity_var_location = _VAR_sequence
-            elif count_var[1] == "P":
+            elif var_name_upper == "P":
                 pressure_var_location = _VAR_sequence
 
             _VAR_sequence += 1
 
         else:
+            # 处理特殊参数
             if key == "rho":
                 rho = value
             elif key == "mu":
@@ -220,11 +225,14 @@ def write_title(file_handle=None, fluid_zone=None):
     file_handle.write('DATASETAUXDATA Common.VectorVarsAreVelocity="TRUE"\n')
     file_handle.write(f'DATASETAUXDATA Common.Viscosity="{mu}"\n')
     file_handle.write(f'DATASETAUXDATA Common.Density="{rho}"\n')
-    file_handle.write(f'DATASETAUXDATA Common.UVar="{x_dir_velocity_var_location}"\n')
-    file_handle.write(f'DATASETAUXDATA Common.VVar="{y_dir_velocity_var_location}"\n')
-    file_handle.write(f'DATASETAUXDATA Common.PressureVar="{pressure_var_location}"\n')
-
-    # _VARLOCATION = " VARLOCATION=(["+','.join(_VARLOCATION_NODAL)+"],["+','.join(_VARLOCATION_CELLCENTERED)+"])\n"
+    
+    # 只有在存在U,V,P变量时才写入这些AUXDATA
+    if x_dir_velocity_var_location > 0:
+        file_handle.write(f'DATASETAUXDATA Common.UVar="{x_dir_velocity_var_location}"\n')
+    if y_dir_velocity_var_location > 0:
+        file_handle.write(f'DATASETAUXDATA Common.VVar="{y_dir_velocity_var_location}"\n')
+    if pressure_var_location > 0:
+        file_handle.write(f'DATASETAUXDATA Common.PressureVar="{pressure_var_location}"\n')
 
     return _NODAL_VAR, _CELLCENTERED_VAR, _VAR_sequence
 
@@ -274,6 +282,7 @@ def write_interior_zone(
     neighbour_cell = zone["neighbour_cell"][0]
     counts = count_cells_num_node(cells_index)
     write_face = False
+    
     if counts.max() <= 3:
         file_handle.write(
             f" Nodes={X.size}, Elements={cells_index.max().item()+1}, "
@@ -307,7 +316,24 @@ def write_interior_zone(
         if var == "node|X" or var == "node|Y":
             field.append(zone[var][0, :, 0])
         else:
-            field.append(zone[var][t, :, 0])
+            # 检查变量是否存在于zone中
+            if var in zone:
+                if isinstance(zone[var], np.ndarray):
+                    if zone[var].ndim >= 3:
+                        field.append(zone[var][t, :, 0])
+                    elif zone[var].ndim == 2:
+                        field.append(zone[var][t, :])
+                    else:
+                        field.append(zone[var][:])
+                else:
+                    # 如果是标量值，创建一个与节点数相同的数组
+                    num_points = X.size
+                    field.append(np.full(num_points, float(zone[var])))
+            else:
+                # 如果变量不存在，用零填充
+                num_points = X.size
+                field.append(np.zeros(num_points))
+                
     field = np.concatenate(field, axis=0)
     file_handle.write(formatnp_vectorized(field))
 
@@ -343,7 +369,7 @@ def write_boundary_zone(file_handle=None, zone=None, t=None):
     file_handle.write('AUXDATA Common.IsBoundaryZone="TRUE"\n')
     file_handle.write(" DATAPACKING=BLOCK\n")
 
-    node_var, cell_var, _, _, _, _, _, _, _ = detect_var_loacation(fluid_zone=zone)
+    node_var, cell_var, _ = detect_var_loacation(fluid_zone=zone)[:3]
 
     write_varlocation_and_datatype(
         file_handle=file_handle, node_var=node_var, cell_var=cell_var
@@ -354,7 +380,23 @@ def write_boundary_zone(file_handle=None, zone=None, t=None):
         if var == "node|X" or var == "node|Y":
             field.append(zone[var][0, :, 0])
         else:
-            field.append(zone[var][t, :, 0])
+            # 检查变量是否存在于zone中
+            if var in zone:
+                if isinstance(zone[var], np.ndarray):
+                    if zone[var].ndim >= 3:
+                        field.append(zone[var][t, :, 0])
+                    elif zone[var].ndim == 2:
+                        field.append(zone[var][t, :])
+                    else:
+                        field.append(zone[var][:])
+                else:
+                    # 如果是标量值，创建一个与节点数相同的数组
+                    num_points = X.shape[1]
+                    field.append(np.full(num_points, float(zone[var])))
+            else:
+                # 如果变量不存在，用零填充
+                num_points = X.shape[1]
+                field.append(np.zeros(num_points))
 
     field = np.concatenate(field, axis=0)
     file_handle.write(formatnp_vectorized(field))
@@ -364,30 +406,59 @@ def write_boundary_zone(file_handle=None, zone=None, t=None):
 def write_tecplotzone(
     filename="flowcfdgcn.dat", datasets=None, time_step_length=100
 ):
+    """
+    写入Tecplot格式文件，支持多种data_array和多个zone
+    
+    参数:
+    - filename: 输出文件名
+    - datasets: 包含zones的列表，每个zone可以是interior或boundary zone
+    - time_step_length: 时间步数
+    """
     print("writing to tecplot file")
 
-    interior_zone, boundary_zone = datasets[0], datasets[1]
+    if not datasets or len(datasets) == 0:
+        print("Warning: No datasets provided")
+        return
+
+    # 过滤掉None的zones
+    valid_zones = [zone for zone in datasets if zone is not None]
+    
+    if len(valid_zones) == 0:
+        print("Warning: No valid zones found")
+        return
+
+    # 使用第一个有效zone来写入标题和变量信息
+    main_zone = valid_zones[0]
 
     with open(filename, "w") as file_handle:
-        interor_NODAL_VAR, interor_CELLCENTERED_VAR, _VAR_sequence = write_title(
-            file_handle=file_handle, fluid_zone=interior_zone
+        interior_NODAL_VAR, interior_CELLCENTERED_VAR, _VAR_sequence = write_title(
+            file_handle=file_handle, fluid_zone=main_zone
         )
 
-        # write_varlocation_and_datatype(file_handle=file_handle,node_var=_NODAL_VAR,cell_var=_CELLCENTERED_VAR)
-
         for time_step in range(time_step_length):
-            write_interior_zone(
-                file_handle=file_handle,
-                zone=interior_zone,
-                node_var=interor_NODAL_VAR,
-                cell_var=interor_CELLCENTERED_VAR,
-                t=time_step,
-            )
-
-            if boundary_zone:
-                write_boundary_zone(
-                    file_handle=file_handle, zone=boundary_zone, t=time_step
-                )
+            # 写入所有zones
+            for zone_idx, zone in enumerate(datasets):
+                if zone is None:
+                    continue
+                    
+                # 判断zone类型
+                if "face" in zone and isinstance(zone["face"], np.ndarray):
+                    # 这是boundary zone
+                    write_boundary_zone(
+                        file_handle=file_handle, zone=zone, t=time_step
+                    )
+                else:
+                    # 这是interior zone
+                    # 为每个zone重新检测变量
+                    zone_NODAL_VAR, zone_CELLCENTERED_VAR = detect_var_loacation(fluid_zone=zone)[:2]
+                    
+                    write_interior_zone(
+                        file_handle=file_handle,
+                        zone=zone,
+                        node_var=zone_NODAL_VAR,
+                        cell_var=zone_CELLCENTERED_VAR,
+                        t=time_step,
+                    )
 
     print("write done")
     

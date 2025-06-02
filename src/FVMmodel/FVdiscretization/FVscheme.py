@@ -22,21 +22,31 @@ from torch_geometric.nn import global_add_pool,global_mean_pool
 
 class Intergrator(FV_flux):
     def __init__(self, ):
+        """
+        Integrator class for finite volume schemes.
+        Inherits from FV_flux. Used for integrating fluxes and assembling system equations.
+        """
         super(Intergrator, self).__init__()
         self.epoch = 0
-        
+
     def _fix_face_flux_BC(self, face_flux, face_type, y_node, face_node):
-        
+        """
+        Fixes the face flux at boundary conditions.
+        Args:
+            face_flux (Tensor): [N_faces, D] Face flux values.
+            face_type (Tensor): [N_faces] Face type (boundary, inflow, etc).
+            y_node (Tensor): [N_nodes, D] Node values.
+            face_node (Tensor): [2, N_faces] Node indices for each face.
+        Returns:
+            Tensor: Modified face_flux with BC applied.
+        """
         mask_inflow = (face_type == NodeType.INFLOW).squeeze()
         mask_wall = (face_type == NodeType.WALL_BOUNDARY).squeeze()
-        
         y_face = (y_node[face_node[0]]+y_node[face_node[1]])/2.
-        
         face_flux[mask_inflow,0:2] = y_face[mask_inflow,0:2]
         face_flux[mask_wall,0:2] = 0.
-        
         return face_flux
-        
+
     def conserved_form(
         self,
         uvp_new=None,
@@ -52,6 +62,20 @@ class Intergrator(FV_flux):
         graph_Index=None,
         ncn_smooth=None,
     ):
+        """
+        Compute the conserved form of the finite volume equations.
+        Args:
+            uvp_new (Tensor): [N_nodes, C] New node values.
+            uv_hat (Tensor): [N_nodes, C] Intermediate node values.
+            uv_old (Tensor): [N_nodes, C] Previous node values.
+            uvp_collection (Tensor): [N_nodes, C] Collection of node variables.
+            grad_phi (Tensor): [N_nodes, C, 2] Node gradients.
+            hessian_phi (Tensor): [N_nodes, C, 2, 2] Node Hessians.
+            graph_node, graph_node_x, graph_edge, graph_cell, graph_Index: Graph data objects.
+            ncn_smooth (bool): Whether to smooth node values for visualization.
+        Returns:
+            Tuple of loss terms and interpolated node/cell values.
+        """
         # prepare face neighbour cell`s index
         cells_node = graph_node.face
         cells_face = graph_edge.face
@@ -129,12 +153,13 @@ class Intergrator(FV_flux):
                     cells_face_surface_vec.unsqueeze(2),
                 ).squeeze()
             )
-            surface_p = p_face_new[cells_face] * cells_face_surface_vec
+            surface_p = p_face_new[cells_face, :] * cells_face_surface_vec
             loss_press = (viscosity_force_pressure_outlet - surface_p)[cells_face_outflow_mask]
-            
             loss_press = torch.sqrt(
                 global_add_pool(
-                    (loss_press)**2, batch=graph_edge.batch[cells_face[cells_face_outflow_mask]]
+                    (loss_press)**2, 
+                    batch=graph_edge.batch[cells_face[cells_face_outflow_mask]],
+                    size=graph_edge.batch.max(dim=0).values + 1
                 ).sum(dim=-1,keepdim=True)
             )
         else:
@@ -263,6 +288,20 @@ class Intergrator(FV_flux):
         graph_Index=None,
         ncn_smooth=None,
     ):
+        """
+        Compute the non-conserved form of the finite volume equations.
+        Args:
+            uvp_new (Tensor): [N_nodes, C] New node values.
+            uv_hat (Tensor): [N_nodes, C] Intermediate node values.
+            uv_old (Tensor): [N_nodes, C] Previous node values.
+            uvp_collection (Tensor): [N_nodes, C] Collection of node variables.
+            grad_phi (Tensor): [N_nodes, C, 2] Node gradients.
+            hessian_phi (Tensor): [N_nodes, C, 2, 2] Node Hessians.
+            graph_node, graph_node_x, graph_edge, graph_cell, graph_Index: Graph data objects.
+            ncn_smooth (bool): Whether to smooth node values for visualization.
+        Returns:
+            Tuple of loss terms and interpolated node/cell values.
+        """
         # prepare face neighbour cell`s index
         cells_node = graph_node.face
         cells_face = graph_edge.face
@@ -349,8 +388,10 @@ class Intergrator(FV_flux):
             loss_press = (viscosity_force_pressure_outlet - surface_p)[cells_face_outflow_mask]
             loss_press = torch.sqrt(
                 global_add_pool(
-                    (loss_press)**2, batch=graph_edge.batch[cells_face[cells_face_outflow_mask]]
-                ).sum(dim=-1).sum(dim=-1,keepdim=True)
+                    (loss_press)**2, 
+                    batch=graph_edge.batch[cells_face[cells_face_outflow_mask]],
+                    size=graph_edge.batch.max(dim=0).values + 1
+                ).sum(dim=-1,keepdim=True)
             )
         else:
             loss_press = torch.zeros((graph_cell.num_graphs,1),device=p_face_new.device)
@@ -448,7 +489,7 @@ class Intergrator(FV_flux):
         # interpolate uvp_new_ell to node for smooth visualization
         if ncn_smooth:
 
-            uv_new = self.cell_to_node_2nd_order(
+            rt_uvp_new = self.cell_to_node_2nd_order(
                 cell_phi=uvp_cell_new[:,0:3],
                 cell_grad=None,
                 cells_node=cells_node,
@@ -456,7 +497,7 @@ class Intergrator(FV_flux):
                 centroid=graph_cell.pos,
                 mesh_pos=graph_node.pos,
             )
-            rt_uvp_new = uv_new
+            # rt_uvp_new = uv_new
         else:
             rt_uvp_new = uvp_new
             
@@ -469,6 +510,110 @@ class Intergrator(FV_flux):
             uvp_cell_new,
         )
 
+    def LSFD(
+        self,
+        uvp_new=None,
+        uv_hat=None,
+        uv_old=None,
+        uvp_collection=None,
+        grad_phi=None,
+        hessian_phi=None,
+        graph_node=None,
+        graph_node_x=None,
+        graph_edge=None,
+        graph_cell=None,
+        graph_Index=None,
+        ncn_smooth=None,
+    ):
+        """
+        Least Squares Finite Difference (LSFD) residual computation for the system.
+        Args:
+            uvp_new (Tensor): [N_nodes, C] New node values.
+            uv_hat (Tensor): [N_nodes, C] Intermediate node values.
+            uv_old (Tensor): [N_nodes, C] Previous node values.
+            uvp_collection (Tensor): [N_nodes, C] Collection of node variables.
+            grad_phi (Tensor): [N_nodes, C, 2] Node gradients.
+            hessian_phi (Tensor): [N_nodes, C, 2, 2] Node Hessians.
+            graph_node, graph_node_x, graph_edge, graph_cell, graph_Index: Graph data objects.
+            ncn_smooth (bool): Whether to smooth node values for visualization.
+        Returns:
+            Tuple containing the normalized residual and other outputs.
+        """
+
+        # prepare face neighbour cell`s index
+        cells_node = graph_node.face
+        cells_face = graph_edge.face
+        cells_index = graph_cell.face
+        cells_area = graph_cell.cells_area.view(-1,1)
+        cells_face_unv = graph_cell.cells_face_unv.view(-1,2)
+        face_type = graph_edge.face_type.view(-1,1)
+        theta_PDE = graph_Index.theta_PDE
+        face_area = graph_edge.face_area.view(-1,1)
+        cells_face_surface_vec = cells_face_unv * face_area[cells_face]
+
+        # pde coefficent
+        unsteady_coefficent_x = theta_PDE[:, 0:1]
+        unsteady_coefficent_y = theta_PDE[:, 0:1]
+        continuity_eq_coefficent = theta_PDE[:, 1:2]
+        convection_coefficent = theta_PDE[:, 2:3]
+        grad_p_coefficent = theta_PDE[:, 3:4]
+        diffusion_coefficent = theta_PDE[:, 4:5]
+        source_term = theta_PDE[:, 5:6] * cells_area
+        dt_cell = graph_Index.dt_graph[graph_cell.batch, :]
+        
+        mask_bc_node  = (
+            (graph_node.node_type == NodeType.WALL_BOUNDARY) | 
+            (graph_node.node_type == NodeType.INFLOW)|
+            (graph_node.node_type == NodeType.PRESS_POINT)|\
+            (graph_node.node_type == NodeType.IN_WALL)).squeeze()
+        
+        u = uv_hat[:, 0:1]
+        v = uv_hat[:, 1:2]
+        p = uvp_new[:, 2:3]
+
+        u_x = grad_phi[:, 3, 0:1]
+        u_y = grad_phi[:, 3, 1:2]
+
+        v_x = grad_phi[:, 4, 0:1]
+        v_y = grad_phi[:, 4, 1:2]
+
+        p_x = grad_phi[:, 2, 0:1]
+        p_y = grad_phi[:, 2, 1:2]
+
+        u_xx = hessian_phi[:, 3, 0, 0:1]
+        u_yy = hessian_phi[:, 3, 1, 1:2]
+
+        v_xx = hessian_phi[:, 4, 0, 0:1]
+        v_yy = hessian_phi[:, 4, 1, 1:2]
+
+        # fmt: off
+        # residual_u = ((uvp_new[:,0:1]-uv_old[:,0:1])/self.dt + (u * u_x + v * u_y) + p_x - self.mu * (u_xx + u_yy))[~self.mask_bc_node]
+        # residual_v = ((uvp_new[:,1:2]-uv_old[:,1:2])/self.dt + (u * v_x + v * v_y) + p_y - self.mu * (v_xx + v_yy))[~self.mask_bc_node]
+        # residual_cont = (u_x + v_y)[~self.mask_bc_node]
+        residual_u = ((u * u_x + v * u_y) + p_x - diffusion_coefficent * (u_xx + u_yy))[~mask_bc_node]
+        residual_v = ((u * v_x + v * v_y) + p_y - diffusion_coefficent * (v_xx + v_yy))[~mask_bc_node]
+        residual_cont = (u_x + v_y)[~mask_bc_node]
+        # fmt: on
+
+        loss_residual = (
+            torch.norm(residual_u) + torch.norm(residual_v) + 10*torch.norm(residual_cont)
+        ) 
+
+        if self.epoch == 0:
+            self.init_residual = loss_residual.clone().detach().cpu().item()
+
+        loss_residual = loss_residual / self.init_residual
+
+        self.epoch +=1 
+        
+        return (
+            loss_residual,
+            None,
+            None,
+            None,
+            uvp_new,
+        )
+        
     # @torch.compile
     def forward(
         self,
@@ -482,6 +627,17 @@ class Intergrator(FV_flux):
         graph_Index=None,
         params=None,
     ):
+        """
+        Forward pass for the integrator. Reconstructs gradients and computes loss terms.
+        Args:
+            uvp_new_node (Tensor): [N_nodes, C] New node values.
+            uv_hat_node (Tensor): [N_nodes, C] Intermediate node values.
+            uv_old_node (Tensor): [N_nodes, C] Previous node values.
+            graph_node, graph_node_x, graph_edge, graph_cell, graph_Index: Graph data objects.
+            params: Parameter object with attributes like order, conserved_form, ncn_smooth.
+        Returns:
+            Tuple of loss terms and interpolated node/cell values.
+        """
         """>>> Reconstruct Gradient >>>"""
         # 1st reconstruct node to node x gradient
         uvp_new_uv_hat_uv_old = torch.cat(
@@ -491,11 +647,11 @@ class Intergrator(FV_flux):
 
         grad_phi_larg = node_based_WLSQ(
             phi_node=uvp_new_uv_hat_uv_old,
-            edge_index=graph_node_x.support_edge,
+            edge_index=graph_node_x.face_node_x,
+            extra_edge_index=graph_node_x.support_edge,
             mesh_pos=graph_node.pos,
-            dual_edge=False,
             order=params.order,
-            precompute_Moments=[graph_node_x.A_node_to_node,graph_node_x.B_node_to_node],
+            precompute_Moments=[graph_node_x.A_node_to_node, graph_node_x.single_B_node_to_node, graph_node_x.extra_B_node_to_node],
         )  # return: [N, C, 2] ,2 is the grad dimension， if higher order method was used
            # it returns [N,C,5](2nd), [N,C,9](3rd), [N,C,14](4th)
            
@@ -510,16 +666,6 @@ class Intergrator(FV_flux):
         # else:
         #     hessian_phi = None
         hessian_phi = None  
-        # hessian_phi = node_based_WLSQ(
-        #      phi_node=torch.cat([grad_phi[:,idx,:] for idx in range(grad_phi.shape[1])],dim=-1),
-        #      edge_index=graph_node_x.support_edge,
-        #      mesh_pos=graph_node.pos,
-        #      dual_edge=False,
-        #      order=params.order,
-        #      precompute_Moments=[graph_node_x.A_node_to_node,graph_node_x.B_node_to_node],
-        # )  # return: [N, 2*C, 2], 2*C is u_x, u_y, v_x, v_y, p_x, p_y
-        # hessian_phi = hessian_phi.view(hessian_phi.shape[0], -1, 2, 2) # return: [N, C, 2, 2],
-        # hessian_phi=None
         """<<< Reconstruct Gradient <<<"""
 
         if params.conserved_form:

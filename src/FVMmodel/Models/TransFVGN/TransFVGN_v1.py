@@ -54,6 +54,7 @@ class Simulator(nn.Module):
     def forward(
         self,
         graph_node=None,
+        graph_edge=None,
         graph_cell=None,
     ):
 

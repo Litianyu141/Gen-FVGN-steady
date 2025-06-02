@@ -29,6 +29,7 @@ params.on_gpu=0
 params.dataset_dir = "datasets/lid_driven_cavity_101x101"
 params.n_epochs = 40000
 # params.max_inner_steps = 10000 rollout模式下不需要内迭代
+params.norm_global=False # 先默认为False,如果读取的Logger里面为True,则会自动改为True
 logger_head = "Logger"
 ''' <<< 单独设置参数 <<< '''
 

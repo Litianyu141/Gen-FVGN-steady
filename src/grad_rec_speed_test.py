@@ -34,10 +34,14 @@ torch.cuda.set_per_process_memory_fraction(0.8, params.on_gpu)
 torch.set_float32_matmul_precision('high')
 
 device = "cuda"
-params.dataset_dir="datasets/lid_driven_cavity_101x101"
-params.dataset_size=4
+params.dataset_dir="datasets/Grad_test/lid_driven_cavity_101x101"
+params.dataset_size=1
 params.batch_size=1
 params.order = "2nd" # 1st, 2nd, 3rd, 4th
+
+# 编译 node_based_WLSQ 函数 - 只编译主要测试函数
+compiled_node_based_WLSQ = torch.compile(node_based_WLSQ)
+# 不编译 compute_normal_matrix，因为它包含可能导致图断裂的操作
 
 # initialize Logger and load model / optimizer if according parameters were given
 logger = Logger(
@@ -111,52 +115,49 @@ for batch_index, (
         device=device,
     )
 
-    ''' >>> 预计算moments >>> '''
-    (A_node_to_node, two_way_B_node_to_node) = compute_normal_matrix(
-        order=params.order,
-        mesh_pos=graph_node.pos,
-        outdegree=graph_node_x.support_edge[0],
-        indegree=graph_node_x.support_edge[1],
-        dual_edge=False,
-    )
-    singleway_B = torch.chunk(two_way_B_node_to_node, 2, dim=0)[0]
-    
-    # 先运行一次让torch.compile编译好
-    grad_phi = node_based_WLSQ(
-        phi_node=phi_node_GT,
-        edge_index=graph_node_x.support_edge,
-        mesh_pos=graph_node.pos,
-        dual_edge=False,
-        order=params.order,
-        precompute_Moments=[A_node_to_node, singleway_B],
-    )  
-    ''' <<< 预计算moments <<< '''
-
-    ''' >>> Perform gradient reconstruction 100 times and calculate average time >>> '''
-    total_time = 0.0
-    num_runs = 50000
-    for _ in range(num_runs):
-        start_time = time.time()
-        grad_phi = node_based_WLSQ(
-            phi_node=phi_node_GT,
-            edge_index=graph_node_x.support_edge,
-            mesh_pos=graph_node.pos,
-            dual_edge=False,
+    with torch.no_grad():
+        ''' >>> 预计算moments >>> '''
+        (A_node_to_node, two_way_B_node_to_node, extra_B_node_to_node) = compute_normal_matrix(
             order=params.order,
-            precompute_Moments=[A_node_to_node, singleway_B],
-        )  
-        # grad_phi = node_based_WLSQ(
-        #     phi_node=phi_node_GT,
-        #     edge_index=graph_node_x.support_edge,
-        #     mesh_pos=graph_node.pos,
-        #     dual_edge=False,
-        #     order=params.order,
-        # )  
-        total_time += time.time() - start_time
+            mesh_pos=graph_node.pos,
+            edge_index=graph_node_x.face_node_x,
+            extra_edge_index=graph_node_x.support_edge
+        )
+        single_way_B = torch.chunk(two_way_B_node_to_node, 2, dim=0)[0]
+        
+        # 先运行一次编译版本进行预热，并检查输出
+        grad_phi_warmup = compiled_node_based_WLSQ(
+            phi_node=phi_node_GT,
+            edge_index=graph_node_x.face_node_x,
+            extra_edge_index=graph_node_x.support_edge,
+            mesh_pos=graph_node.pos,
+            order=params.order,
+            precompute_Moments=[A_node_to_node, single_way_B, extra_B_node_to_node],
+            rt_cond=False,
+        )
+        print(f"Warmup gradient shape: {grad_phi_warmup.shape}")
+        print(f"Warmup gradient contains NaN: {torch.isnan(grad_phi_warmup).any()}")
+        ''' <<< 预计算moments <<< '''
 
-    average_time = total_time / num_runs
-    print(f"{case_name} Average Grad Rec. Time over {num_runs} runs: {average_time}")
-    ''' <<< Perform gradient reconstruction 100 times and calculate average time <<< '''
+        ''' >>> Perform gradient reconstruction 50000 times and calculate average time >>> '''
+        total_time = 0.0
+        num_runs = 50000
+        for _ in range(num_runs):
+            start_time = time.time()
+            grad_phi = compiled_node_based_WLSQ(
+                phi_node=phi_node_GT,
+                edge_index=graph_node_x.face_node_x,
+                extra_edge_index=graph_node_x.support_edge,
+                mesh_pos=graph_node.pos,
+                order=params.order,
+                precompute_Moments=[A_node_to_node, single_way_B, extra_B_node_to_node],
+                rt_cond=False,
+            )  
+            total_time += time.time() - start_time
+
+        average_time = total_time / num_runs
+        print(f"{case_name} Average Grad Rec. Time over {num_runs} runs: {average_time}")
+        ''' <<< Perform gradient reconstruction 100 times and calculate average time <<< '''
     
 # Calculate the relative L2 error
 grad_relative_l2_error_1st = torch.norm(

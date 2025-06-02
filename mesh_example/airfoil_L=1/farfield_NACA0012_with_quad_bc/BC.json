@@ -1,0 +1,28 @@
+{
+    "inflow":[1],
+    "wall":[8, 9],
+    "outflow":[2, 3, 7],
+    "pressure_point":null,
+    "periodic":null,
+    "surf":[8, 9],
+    "stencil|BC_extra_points":4,
+    "stencil|khops":2,
+    "theta_PDE":{
+        "unsteady":1,
+        "continuity":1,
+        "convection":1,
+        "grad_p":1,
+        "inlet":[0.7,0.1,1.5],
+        "rho":[1,1,1],
+        "mu":[0.001,0.001,0.001],
+        "source":[0,0,0],
+        "aoa":[0,0,0],
+        "dt":0.5,
+        "L":1,
+        "Re_max":3000,
+        "Re_min":100
+    },
+    "sigma":[1,1,1],
+    "inlet_type": "uniform", "_comment1": "'uniform'; 'uniform_aoa'; 'parabolic'; 'parabolic_aoa'",
+    "init_field_type": "uniform", "_comment2": "[x,x,x]: Specify uniform initial values for u, v, p; 'data.vtu' or 'data.h5': Provide initial field files; 'uniform': Use boundary conditions for uniform initialization; 'parabolic': Use boundary conditions for parabolic initialization"
+}

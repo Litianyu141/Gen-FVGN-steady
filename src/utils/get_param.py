@@ -36,21 +36,22 @@ def params(load=None):
         # Training parameters
         parser.add_argument('--net', default="TransFVGN_v2", type=str, help='network to train (default: FVGN)', choices=["Attu-FVGN2D","FVGN","TransFVGN_v1", "TransFVGN_v2"])
         parser.add_argument('--n_epochs', default=210000, type=int, help='number of epochs (after each epoch, the model gets saved)')
-        parser.add_argument('--batch_size', default=16, type=int, help='batch size (default: 100)')
-        parser.add_argument('--average_sequence_length', default=50, type=int, help='average sequence length in dataset=dataset_size/batch_size(default: 5000)')
-        parser.add_argument('--dataset_size', default=50, type=int, help='size of dataset (default: 1000)')
+        parser.add_argument('--batch_size', default=8, type=int, help='batch size (default: 100)')
+        parser.add_argument('--average_sequence_length', default=500, type=int, help='average sequence length in dataset=dataset_size/batch_size(default: 5000)')
+        parser.add_argument('--dataset_size', default=100, type=int, help='size of dataset (default: 1000)')
         parser.add_argument('--lr', default=5e-5, type=float, help='learning rate of optimizer (default: 0.0001)')
         parser.add_argument('--lr_scheduler', default="fixlr", type=str, help='choose learing rate scheduler (default: coslr)',choices=['coslr','fix'])
-        parser.add_argument('--on_gpu', default=0, type=int, help='set training on which gpu')
+        parser.add_argument('--on_gpu', default=1, type=int, help='set training on which gpu')
 
         # train strategy parameters
         parser.add_argument('--integrator', default="imex", type=str, help='integration scheme (explicit / implicit / imex) (default: imex)',choices=['explicit','implicit','imex'])
-        parser.add_argument('--dimless', default=True, type=str2bool, help='Injetcting noise on face length for prevention of overfiting (default:False)')
+        # parser.add_argument('--dimless', default=True, type=str2bool, help='Injetcting noise on face length for prevention of overfiting (default:False)')
+        # 现在默认一定用dimless, Now default of dimless is always True
         parser.add_argument('--norm_uvp', default=True, type=str2bool, help='Whether norm input uvp value at graph_node.x (default:False)')
-        parser.add_argument('--norm_global', default=False, type=str2bool, help='Whether norm input condition (eq. Re, pde_theta) value at graph_node.x (default:False)')
-        parser.add_argument('--ncn_smooth', default=True, type=str2bool, help='inteploting node value to cell and to node for smoother results (default:False)')
-        parser.add_argument('--conserved_form', default=True, type=str2bool, help='whether use conserved discrete form (default:True)')
-        parser.add_argument('--residual_tolerance', default=1e-7, type=float, help='abandaned')
+        parser.add_argument('--norm_global', default=True, type=str2bool, help='Whether norm input condition (eq. Re, pde_theta) value at graph_node.x (default:False)')
+        parser.add_argument('--ncn_smooth', default=True, type=str2bool, help='inteploting node value to cell and to node (default:False)')
+        parser.add_argument('--conserved_form', default=True, type=str2bool, help='Use artifacial wall method, which is setting boudary node to zero which it was flow into the domain (default:False)')
+        parser.add_argument('--residual_tolerance', default=1e-7, type=float, help='unsteady time stepping convergence tolerance')
         parser.add_argument('--max_inner_steps', default=20, type=int, help='unsteady time stepping convergence max iteration steps')
         parser.add_argument('--order', default="2nd", type=str, help='order of WLSQ', choices=["1st","2nd","3rd", "4th"])
         
@@ -74,7 +75,7 @@ def params(load=None):
         parser.add_argument('--node_output_size', default=3, type=int, help='edge decoder edge_output_size uvp on edge center(default: 8)')
 
         #dataset params
-        parser.add_argument('--dataset_dir', default='datasets/cylinder_flow_full_tri_finer_Re=100-1000', type=str, help='load latest version for training (if True: leave load_date_time and load_index None. default: False)')	
+        parser.add_argument('--dataset_dir', default='datasets/balanced_datasets', type=str, help='load latest version for training (if True: leave load_date_time and load_index None. default: False)')	
 
         params = parser.parse_args([])
 
@@ -111,6 +112,13 @@ def generate_combinations(
             rho=1.
         Re = (U*rho*L) / mu
         if (Re <= Re_max and Re>=Re_min):
+            if dt == "1/Re":
+                dt = 1/Re
+            elif (type(dt) == float) or (type(dt) == int):
+                pass
+            else:
+                raise ValueError("Wrong dt in BC.json, it should be float or int or 1/Re")
+            
             valid_combinations.append([U, rho, mu, source, aoa_list, dt, L])
             valid_Re_values.append(Re)
 

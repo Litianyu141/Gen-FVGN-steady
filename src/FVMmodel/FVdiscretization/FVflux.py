@@ -20,5 +20,9 @@ from FVMmodel.FVdiscretization.FVInterpolation import Interplot
 
 class FV_flux(Interplot):
     def __init__(self):
+        """
+        FV_flux class for finite volume flux calculation.
+        Inherits from Interplot. Used as a base for flux-related operations.
+        """
         super(FV_flux, self).__init__()
         self.plotted = False

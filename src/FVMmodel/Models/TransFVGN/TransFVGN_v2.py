@@ -71,7 +71,7 @@ class Simulator(nn.Module):
         )
 
         processpr_list = []
-        for _ in range(1):
+        for _ in range(2):
             processpr_list.append(
                 AttnProcessor(
                     message_passing_num=message_passing_num, 

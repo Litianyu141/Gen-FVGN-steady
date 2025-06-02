@@ -5,6 +5,8 @@ sys.path.append(file_dir)
 
 import torch
 import torch.nn as nn
+import torch.jit as jit
+from typing import Optional, Tuple
 from Utils.utilities import (
     decompose_and_trans_node_attr_to_cell_attr_graph,
     copy_geometric_data,
@@ -17,10 +19,19 @@ import numpy as np
 from torch_scatter import scatter_add, scatter_mean
 import matplotlib.pyplot as plt
 
+def _rbf_multiquadric_kernel_fast(distances_squared: torch.Tensor, shape_param_sq: float) -> torch.Tensor:
+    """最优化的多二次核函数 - 保留用于兼容性"""
+    return torch.sqrt(distances_squared + shape_param_sq)
+
 class Interplot(nn.Module):
-    def __init__(self):
+    def __init__(self, mesh_pos=None, centroid=None, cells_node=None, cells_index=None):
         super().__init__()
         self.plotted = False
+        # Store mesh data for RBF interpolation
+        self.mesh_pos = mesh_pos
+        self.centroid = centroid
+        self.cells_node = cells_node
+        self.cells_index = cells_index
 
     def node_to_cell_2nd_order(
         self,
@@ -373,8 +384,8 @@ class Interplot(nn.Module):
             nabala_phi_f = nabala_phi_f_hat + self.chain_element_wise_vector_product_up(
                 (
                     (
-                        phi_cell_convection_outer_single
-                        - phi_cell_convection_inner_single
+                        phi_cell_convection_outer
+                        - phi_cell_convection_inner
                     )
                     / d_CF
                     - self.chain_vector_dot_product(nabala_phi_f_hat, e_CF)
@@ -387,8 +398,8 @@ class Interplot(nn.Module):
                 nabala_phi_f_hat
                 + (
                     (
-                        phi_cell_convection_outer_single
-                        - phi_cell_convection_inner_single
+                        phi_cell_convection_outer
+                        - phi_cell_convection_inner
                     )
                     / d_CF
                     - self.chain_dot_product(nabala_phi_f_hat, e_CF)
@@ -499,3 +510,203 @@ class Interplot(nn.Module):
         self,
     ):
         raise NotImplementedError
+
+    def rbf_interpolate_ultra_fast(
+        self,
+        sup_phi: torch.Tensor,  # [N_sup, C] 支撑点的值
+        sup_pos: torch.Tensor,  # [N_sup, 2] 支撑点位置 
+        query_pos: torch.Tensor,  # [N_query, 2] 查询点位置
+        sup_indices: torch.Tensor,  # [N_connections] 支撑点索引
+        query_indices: torch.Tensor,  # [N_connections] 查询点索引
+        k: int = 4,  # 每个查询点的邻居数
+        shape_param: float = 0.23  # 固定形状参数以获得最大速度
+    ) -> torch.Tensor:
+        """
+        极速RBF插值函数 - 基于参考代码优化，追求极致速度
+        
+        Args:
+            sup_phi: 支撑点值 [N_sup, C]
+            sup_pos: 支撑点位置 [N_sup, 2] 
+            query_pos: 查询点位置 [N_query, 2]
+            sup_indices: 支撑点索引 [N_connections]
+            query_indices: 查询点索引 [N_connections] 
+            k: 每个查询点的邻居数
+            shape_param: RBF形状参数，固定值以获得最大速度
+            
+        Returns:
+            插值结果 [N_query, C]
+        """
+        n_query = query_pos.size(0)
+        n_features = sup_phi.size(1)
+        
+        # 确保数据结构正确 (每个查询点k个邻居)
+        assert len(sup_indices) == n_query * k, f"索引长度必须等于 n_query * k: {len(sup_indices)} != {n_query} * {k}"
+        
+        # 重组数据 - 直接reshape，最大化内存访问效率
+        sup_pos_neighbors = sup_pos[sup_indices].view(n_query, k, 2)  # [N_query, k, 2]
+        sup_phi_neighbors = sup_phi[sup_indices].view(n_query, k, n_features)  # [N_query, k, C]
+        
+        # 计算支撑点间距离矩阵 - 极度优化的向量化计算
+        neighbors_diff = sup_pos_neighbors.unsqueeze(2) - sup_pos_neighbors.unsqueeze(1)  # [N_query, k, k, 2]
+        distances_squared = torch.sum(neighbors_diff * neighbors_diff, dim=-1)  # [N_query, k, k]
+        
+        # RBF核矩阵 - 使用固定形状参数
+        shape_param_sq = shape_param * shape_param
+        kernel = torch.sqrt(distances_squared + shape_param_sq)  # [N_query, k, k]
+        
+        # 批量求解RBF系数 - 使用torch.linalg.solve的批量版本
+        coeffs = torch.linalg.solve(kernel, sup_phi_neighbors)  # [N_query, k, C]
+        
+        # 计算查询点到支撑点的距离 - 一步到位
+        query_pos_expanded = query_pos[query_indices].view(n_query, k, 2)  # [N_query, k, 2]
+        query_diff = query_pos_expanded - sup_pos_neighbors  # [N_query, k, 2]
+        query_distances_squared = torch.sum(query_diff * query_diff, dim=-1)  # [N_query, k]
+        
+        # 查询点的核值
+        kernel_query = torch.sqrt(query_distances_squared + shape_param_sq).unsqueeze(-1)  # [N_query, k, 1]
+        
+        # 最终插值计算 - 极致优化的矩阵乘法
+        result = torch.sum(kernel_query * coeffs, dim=1)  # [N_query, C]
+        
+        return result
+
+    def node_to_cell_rbf(
+        self,
+        node_phi: torch.Tensor,  # [N_nodes, C] 节点值
+        graph_node=None,
+        graph_cell=None,
+        cells_node: Optional[torch.Tensor] = None,  # [N_connections] 节点索引
+        cells_index: Optional[torch.Tensor] = None,  # [N_connections] 单元索引
+        mesh_pos: Optional[torch.Tensor] = None,  # [N_nodes, 2] 节点位置
+        centroid: Optional[torch.Tensor] = None,  # [N_cells, 2] 单元中心位置
+        k: int = 4,
+        shape_param: float = 0.23
+    ) -> torch.Tensor:
+        """
+        Node到Cell的极速RBF插值
+        """
+        # 获取默认参数
+        if cells_node is None:
+            cells_node = self.cells_node if self.cells_node is not None else graph_node.face
+        if cells_index is None:
+            cells_index = self.cells_index if self.cells_index is not None else graph_cell.face
+        if mesh_pos is None:
+            mesh_pos = self.mesh_pos if self.mesh_pos is not None else graph_node.pos
+        if centroid is None:
+            centroid = self.centroid if self.centroid is not None else graph_cell.pos
+            
+        # 调用通用RBF插值函数
+        return self.rbf_interpolate_universal(
+            phi_values=node_phi,
+            source_pos=mesh_pos, 
+            target_pos=centroid,
+            source_indices=cells_node,
+            target_indices=cells_index,
+            k=k,
+            shape_param=shape_param
+        )
+
+    def cell_to_node_rbf(
+        self,
+        cell_phi: torch.Tensor,  # [N_cells, C] 单元值
+        graph_node=None,
+        graph_cell=None,
+        cells_node: Optional[torch.Tensor] = None,  # [N_connections] 节点索引  
+        cells_index: Optional[torch.Tensor] = None,  # [N_connections] 单元索引
+        mesh_pos: Optional[torch.Tensor] = None,  # [N_nodes, 2] 节点位置
+        centroid: Optional[torch.Tensor] = None,  # [N_cells, 2] 单元中心位置
+        k: int = 4,
+        shape_param: float = 0.23
+    ) -> torch.Tensor:
+        """
+        Cell到Node的极速RBF插值
+        """
+        # 获取默认参数
+        if cells_node is None:
+            cells_node = graph_node.face
+        if cells_index is None:
+            cells_index = graph_cell.face
+        if mesh_pos is None:
+            mesh_pos = graph_node.pos
+        if centroid is None:
+            centroid = graph_cell.pos
+            
+        # 调用通用RBF插值函数（注意这里源和目标的角色互换）
+        return self.rbf_interpolate_universal(
+            phi_values=cell_phi,
+            source_pos=centroid,
+            target_pos=mesh_pos, 
+            source_indices=cells_index,
+            target_indices=cells_node,
+            k=k,
+            shape_param=shape_param
+        )
+
+    def rbf_interpolate_universal(
+        self,
+        phi_values: torch.Tensor,  # [N_source, C] 源点值
+        source_pos: torch.Tensor,  # [N_source, 2] 源点位置
+        target_pos: torch.Tensor,  # [N_target, 2] 目标点位置
+        source_indices: torch.Tensor,  # [N_connections] 源点索引
+        target_indices: torch.Tensor,  # [N_connections] 目标点索引
+        k: int = 4,  # 每个目标点的邻居数
+        shape_param: float = 0.23  # RBF形状参数
+    ) -> torch.Tensor:
+        """
+        通用极速RBF插值函数 - 可处理任意源到目标的插值
+        
+        Args:
+            phi_values: 源点值 [N_source, C]
+            source_pos: 源点位置 [N_source, 2]
+            target_pos: 目标点位置 [N_target, 2]
+            source_indices: 源点索引 [N_connections]
+            target_indices: 目标点索引 [N_connections]
+            k: 每个目标点的邻居数
+            shape_param: RBF形状参数
+            
+        Returns:
+            目标点处的插值结果 [N_target, C]
+            
+        使用示例:
+            # Node到Cell插值
+            cell_values = self.rbf_interpolate_universal(
+                phi_values=node_phi, source_pos=mesh_pos, target_pos=centroid,
+                source_indices=cells_node, target_indices=cells_index
+            )
+            
+            # Cell到Node插值  
+            node_values = self.rbf_interpolate_universal(
+                phi_values=cell_phi, source_pos=centroid, target_pos=mesh_pos,
+                source_indices=cells_index, target_indices=cells_node
+            )
+        """
+        n_target = target_pos.size(0)
+        n_features = phi_values.size(1)
+        
+        # 重组数据 - 直接reshape，最大化内存访问效率
+        source_pos_neighbors = source_pos[source_indices].view(n_target, k, 2)  # [N_target, k, 2]
+        source_phi_neighbors = phi_values[source_indices].view(n_target, k, n_features)  # [N_target, k, C]
+        
+        # 计算源点间距离矩阵 - 极度优化的向量化计算
+        neighbors_diff = source_pos_neighbors.unsqueeze(2) - source_pos_neighbors.unsqueeze(1)  # [N_target, k, k, 2]
+        distances_squared = torch.sum(neighbors_diff * neighbors_diff, dim=-1)  # [N_target, k, k]
+        
+        # RBF核矩阵 - 使用固定形状参数
+        shape_param_sq = shape_param * shape_param
+        kernel = torch.sqrt(distances_squared + shape_param_sq)  # [N_target, k, k]
+        
+        # 批量求解RBF系数 - 使用torch.linalg.solve的批量版本
+        coeffs = torch.linalg.solve(kernel, source_phi_neighbors)  # [N_target, k, C]
+        
+        # 计算目标点到源点的距离 - 一步到位
+        target_pos_expanded = target_pos[target_indices].view(n_target, k, 2)  # [N_target, k, 2]
+        target_diff = target_pos_expanded - source_pos_neighbors  # [N_target, k, 2]
+        target_distances_squared = torch.sum(target_diff * target_diff, dim=-1)  # [N_target, k]
+        
+        # 目标点的核值
+        kernel_target = torch.sqrt(target_distances_squared + shape_param_sq).unsqueeze(-1)  # [N_target, k, 1]
+        
+        # 最终插值计算 - 极致优化的矩阵乘法
+        result = torch.sum(kernel_target * coeffs, dim=1)  # [N_target, C]
+        
+        return result

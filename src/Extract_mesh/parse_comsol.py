@@ -88,9 +88,20 @@ class Cosmol_manager(Basemanager):
                     except ValueError:
                         raise ValueError(f"Invalid item format in '{item}' for '{bc_type}'")
 
-            processed_list = [process_item(item) for item in bc_index_list]
+            # 展平嵌套列表
+            def flatten_list(nested_list):
+                flattened = []
+                for item in nested_list:
+                    if isinstance(item, list):
+                        flattened.extend(flatten_list(item))
+                    else:
+                        flattened.append(item)
+                return flattened
 
-            self.bc[bc_type] = processed_list
+            processed_list = [process_item(item) for item in bc_index_list]
+            flattened_list = flatten_list(processed_list)
+
+            self.bc[bc_type] = flattened_list
             # <<< 新增代码结束 <<<
         
     def read_mesh_file(self, filename):
@@ -341,7 +352,7 @@ class Cosmol_manager(Basemanager):
         node_type = np.full((pos.shape[0]), NodeType.NORMAL)
         surf_mask = np.full((pos.shape[0]), False)
         periodic_idx = None
-        periodic_domain = np.zeros_like(node_type).astype(np.float64)
+        periodic_domain = np.full_like(node_type, -1, dtype=np.float64)
         
         edge_index = self.mesh_file["edg"]["Elements"]  # [E,2]
         edge_geo_index = self.mesh_file["edg"]["Geometric entity indices"]  # [E]
@@ -394,65 +405,7 @@ class Cosmol_manager(Basemanager):
 
                     node_type[bc_edge_index[mask_in_out_l, 0]] = NodeType.INFLOW
                     node_type[bc_edge_index[mask_in_out_r, 1]] = NodeType.INFLOW
-                    
-            elif bc_type == "periodic": # 注意，这里不支持曲线的周期边界，仅支持为直线的周期边界
-                for bc_index in bc_index_list:
-                    mask_src = (edge_geo_index == bc_index[0])
-                    mask_dst = (edge_geo_index == bc_index[1])
-                    bc_edge_index_src = edge_index[mask_src]
-                    bc_edge_index_dst = edge_index[mask_dst]
-                    
-                    node_idx_src = np.unique(
-                        np.concatenate((bc_edge_index_src[:,0], bc_edge_index_src[:,1]))
-                    )
-                    node_idx_dst = np.unique(
-                        np.concatenate((bc_edge_index_dst[:,0], bc_edge_index_dst[:,1]))
-                    )
-                    
-                    assert len(node_idx_src) == len(node_idx_dst), "仅在节点数相等时支持周期边界"
-                    
-                    src_pos, dst_pos = pos[node_idx_src], pos[node_idx_dst]
-                    
-                    # 保证src和dst的一个端点位于直角坐标系原点，且剩余部分位于第一象限
-                    src_dist = np.linalg.norm(src_pos, axis=1)
-                    src_endpoint_idx = np.argmin(src_dist)
-                    shift_src = src_pos[src_endpoint_idx].copy()
-                    src_pos -= shift_src
-                    src_pos = np.abs(src_pos)
-                    
-                    # 按照到原点的距离升序排序，并记录对应的原始索引
-                    src_dist_all = np.linalg.norm(src_pos, axis=1)
-                    src_sorted_idx = np.argsort(src_dist_all)
-                    node_idx_src_ascend = node_idx_src[src_sorted_idx]
-                    
-                    dst_dist = np.linalg.norm(dst_pos, axis=1)
-                    dst_endpoint_idx = np.argmin(dst_dist)
-                    shift_dst = dst_pos[dst_endpoint_idx].copy()
-                    dst_pos -= shift_dst
-                    dst_pos = np.abs(dst_pos)
-                    
-                    dst_dist_all = np.linalg.norm(dst_pos, axis=1)
-                    dst_sorted_idx = np.argsort(dst_dist_all)
-                    node_idx_dst_ascend = node_idx_dst[dst_sorted_idx]
-
-                    if periodic_idx is None:
-                        periodic_idx = np.stack((node_idx_src_ascend, node_idx_dst_ascend), axis=0)
-                    else:
-                        periodic_idx = np.concatenate((
-                            periodic_idx, np.stack((node_idx_src_ascend, node_idx_dst_ascend), axis=0)
-                        ), axis=1)
-                        
-                    ''' >>> 测试周期边界的node_idx_src和node_idx_dst是否正确 >>> '''  
-                    
-                    src_value = np.sin(pos[periodic_idx[0],0])+np.cos(pos[periodic_idx[0],1])
-                    periodic_domain[periodic_idx[0]] += src_value
-                    
-                    # 尝试将src_value赋值给dst
-                    periodic_domain[periodic_idx[1]] = periodic_domain[periodic_idx[0]]
-                     
-                    ''' <<< 测试周期边界的node_idx_src和node_idx_dst是否正确 <<< ''' 
-                    
-                    
+                          
             elif bc_type == "pressure_point":
                 vtk_index = self.mesh_file["vtx"]["Elements"]  # [E]
                 vtk_geo_index = self.mesh_file["vtx"]["Geometric entity indices"]  # [E]
@@ -499,64 +452,10 @@ class Cosmol_manager(Basemanager):
         
         return unique_edge,cells_face
 
-    def save_mesh_as_vtu(self, global_dict, point_data_dict, filename):
-        vertices = global_dict["vertices"]
-
-        # 如果 vertices 是 2D 点，则扩展为 3D
-        if vertices.shape[1] < 3:
-            vertices = np.hstack(
-                [vertices, np.zeros((vertices.shape[0], 3 - vertices.shape[1]))]
-            )
-
-        # 定义元素类型到 VTK 单元类型的映射
-        elem_type_to_vtk = {"tri": pv.CellType.TRIANGLE, "quad": pv.CellType.QUAD}
-
-        # 创建一个空的 UnstructuredGrid
-        combined_grid = pv.UnstructuredGrid()
-
-        # 为每种单元类型创建子网格并合并
-        for elem_type in ["tri", "quad"]:
-            if elem_type in global_dict:
-                elem_data = global_dict[elem_type]
-                elements = elem_data["Elements"]
-                vtk_cell_type = elem_type_to_vtk[elem_type]
-
-                # 构建 cells 列表
-                cells = []
-                for elem in elements:
-                    cells.extend([len(elem)] + elem.tolist())  # 添加点数量和点索引
-
-                # 转换 cells 为 NumPy 数组
-                cells = np.array(cells, dtype=np.int64)
-                cell_types = np.full(len(elements), vtk_cell_type, dtype=np.uint8)
-
-                # 使用点和单元创建子网格
-                sub_grid = pv.UnstructuredGrid(cells, cell_types, vertices)
-
-                # 将子网格合并到组合网格中
-                combined_grid = combined_grid.merge(sub_grid)
-
-        for key, point_point_data in point_data_dict.items():
-            combined_grid.point_data[key] = point_point_data
-
-        # 保存合并的网格为 VTU 文件
-        combined_grid.save(filename)
-        
-        print("Mesh saved as", filename)
-  
     def extract_mesh(self, mesh_only=True):
 
         node_type, surf_mask, periodic_idx, periodic_domain = self.set_node_type()
 
-        self.save_mesh_as_vtu(
-            global_dict=self.mesh_file,
-            point_data_dict={
-                "node_type": node_type[:, None],
-                "periodic_domain": periodic_domain[:, None]
-            },
-            filename=f"{self.file_dir}/node_type_with_mesh.vtu",
-        )
-        
         # fmt: off
         """ compose cells_node, cells_index and edge_index"""
         cells_node = []
@@ -603,57 +502,15 @@ class Cosmol_manager(Basemanager):
                 output_filename=f"{self.file_dir}/surf_edge.vtp",
             )
         
-        if mesh_only:
-            mesh = {
-                "node|pos": torch.from_numpy(self.mesh_file["vertices"]),
-                "node|surf_mask": torch.from_numpy(surf_mask).bool(),
-                "node|node_type": torch.from_numpy(node_type).long(),
-                "face|face_node": torch.from_numpy(face_node).long(),
-                "cells_node": torch.from_numpy(cells_node).long(),
-                "cells_index": torch.from_numpy(cells_index).long(),
-                "cells_face": torch.from_numpy(cells_face).long(),
-                "periodic_idx": torch.from_numpy(periodic_idx).long(),
-            }
-        else:
-            # velocity = torch.index_select(
-            #     torch.from_numpy(self.data_velocity),
-            #     1,
-            #     torch.from_numpy(self.earrange_index).to(torch.long),
-            # )
-            # pressure = torch.index_select(
-            #     torch.from_numpy(self.data_pressure),
-            #     1,
-            #     torch.from_numpy(self.rearrange_index).to(torch.long),
-            # )
-            # mesh = {
-            #     "mesh_pos": torch.from_numpy(self.mesh_pos)
-            #     .to(torch.float64)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "boundary": torch.from_numpy(self.mesh_boundary_index)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "cells_node": torch.from_numpy(self.cells_node)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "cells_index": torch.from_numpy(self.cells_index)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "cells_face_node": torch.from_numpy(self.cells_face_node)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "node_type": torch.from_numpy(self.node_type)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "velocity": velocity[0:600].astype(np.float64),
-            #     "pressure": pressure[0:600].astype(np.float64),
-            # }
-            pass
+        mesh = {
+            "node|pos": torch.from_numpy(self.mesh_file["vertices"]),
+            "node|surf_mask": torch.from_numpy(surf_mask).bool(),
+            "node|node_type": torch.from_numpy(node_type).long(),
+            "face|face_node": torch.from_numpy(face_node).long(),
+            "cells_node": torch.from_numpy(cells_node).long(),
+            "cells_index": torch.from_numpy(cells_index).long(),
+            "cells_face": torch.from_numpy(cells_face).long(),
+        }
 
         # There`s face_center_pos, centroid, face_type, neighbour_cell, face_node_x need to be resolved
         h5_dataset = extract_mesh_state(
@@ -661,6 +518,13 @@ class Cosmol_manager(Basemanager):
             path=self.path,
         )
 
+        # 之所以再最后才绘制网格是因为，再extract_mesh_state中进行了Cells_node和cells_face的逆时针矫正，最后绘制可以看到矫正结果
+        self.save_to_vtu(
+            mesh=h5_dataset, 
+            payload={"node|node_type": node_type[:, None]}, 
+            file_name=f"{self.file_dir}/node_type_with_mesh.vtu",
+        )
+        
         return h5_dataset
 
 
@@ -714,39 +578,41 @@ def writer_process(queue, path):
             if key in group:
                 del group[key]
             group.create_dataset(key, data=value)
+        
+        # 关闭当前文件的writer
+        h5_writer.close()
 
         print(f"{case_name} mesh has been writed")
-
-    # 关闭所有的writer
-    h5_writer.close()
 
 
 if __name__ == "__main__":
     # for debugging
 
     debug_file_path = None
-    # debug_file_path = "datasets/Tayler-Green/mesh.mphtxt"
-
-    case = 0  # 0 stands for 980/PM9A1
-    if case == 0:
-        path = {
-            "simulator": "COMSOL",
-            "comsol_dataset_path": "datasets/Taylor_Green",
-            "mesh_only": True,
-        }
+    # debug_file_path = "datasets/airfoil_L=1/farfield_RAE2822_with_quad_bc_L=1/mesh.mphtxt"
+    # if not debug_file_path.endswith(".mphtxt"):
+    #     raise ValueError(
+    #         "Debug file path must be a specific .mphtxt file"
+    #     )
+        
+    path = {
+        "simulator": "COMSOL",
+        "comsol_dataset_path": "mesh_example",
+        "mesh_only": True,
+    }
 
     # stastic total number of data samples
     total_samples = 0
     file_paths = []
     for subdir, _, files in os.walk(path["comsol_dataset_path"]):
         for data_name in files:
-            if data_name.endswith(".mphtxt") or data_name.endswith(".dat"):
+            if data_name.endswith(".mphtxt"):
                 file_paths.append(os.path.join(subdir, data_name))
 
     # 统计选中的文件总数
-    assert total_samples == 0, "Found no mesh files"
     total_samples = len(file_paths)
     print("total samples: ", total_samples)
+    assert total_samples > 0, "Found no mesh files"
 
     if debug_file_path is not None:
         multi_process = 1

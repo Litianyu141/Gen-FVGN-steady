@@ -55,122 +55,149 @@ class Trainer():
         self.graph_cell = graph_cell
         self.graph_Index = graph_Index
         
-        self.plot_order=0
+        self.graph_node.backup_x = self.graph_node.x[:,self.params.node_phi_size:].clone()
         
-        self.graph_node.x[:,0:3] = torch.cat((self.graph_node.pos,self.graph_node.pos[:,0:1]),dim=-1)
-        self.graph_cell.x[:,0:3] = torch.cat((self.graph_cell.pos,self.graph_cell.pos[:,0:1]),dim=-1)
+        # 初始化为tensor，用于自回归
+        self.uvp_node = self.graph_node.x[:,0:self.params.node_phi_size].clone()
+        self.uvp_cell = self.graph_cell.x[:,0:self.params.node_phi_size].clone()
         
-        self.uvp_node_new = 0
-        self.uvp_cell_new = 0
-        
-    def train(self,n_epoch):
+        self.uvp_cell_new = torch.zeros_like(self.uvp_cell)
+        self.uvp_node_new = torch.zeros_like(self.uvp_node)
+
+    def train(self, n_iterations):
         
         t1_start = time.time()
 
         self.model.train() 
         self.optimizer = torch.optim.LBFGS(
             self.model.parameters(), 
-            max_iter=self.params.n_epochs, 
-            history_size=1000,
-            tolerance_grad=-1,
-            tolerance_change=-1,
+            max_iter=1000,  # 减少每次step的最大内部迭代次数，避免过度优化
+            history_size=100,  # 减少历史信息存储
+            tolerance_grad=1e-6,  # 放宽梯度容忍度
+            tolerance_change=1e-8,  # 放宽变化容忍度
             line_search_fn='strong_wolfe'
         )
 
         self.niter = 0
         
-        def closure():
-            inner_start = time.time()
+        # LBFGS主循环 - 自回归式训练
+        for epoch in range(n_iterations):
+            epoch_start = time.time()
+            
+            # 重置内部迭代计数器
+            inner_iter_count = 0
+            
+            def closure():
+                nonlocal inner_iter_count
+                inner_start = time.time()
+                    
+                self.optimizer.zero_grad()
                 
-            self.optimizer.zero_grad()
-            
-            ''' >>> please check src/Load_mesh/Graph_loader.py/->update_x_attr >>> '''
-            self.graph_node.norm_uvp=params.norm_uvp
-            self.graph_node.norm_global=params.norm_global
-            ''' <<< please check src/Load_mesh/Graph_loader.py/->update_x_attr <<< '''
-            
-            (
-                loss_cont,
-                loss_mom_x,
-                loss_mom_y,
-                loss_press,
-                uvp_node_new,
-                uvp_cell_new,
-            ) = fluid_model(
-                graph_node=self.graph_node,
-                graph_node_x=self.graph_node_x,
-                graph_edge=self.graph_edge,
-                graph_cell=self.graph_cell,
-                graph_Index=self.graph_Index,
-                is_training=True,
-            )
-
-            ''' back up exclude LSFD'''
-            loss_batch = (
-                params.loss_press * loss_press
-                + params.loss_cont * loss_cont
-                + params.loss_mom * loss_mom_x
-                + params.loss_mom * loss_mom_y
-            )
-
-            loss = torch.mean(torch.log(loss_batch))
-            ''' back up exclude LSFD'''
-            
-            # loss = loss_cont_nwise
-            
-            # compute gradients
-            loss.backward()
-            
-            self.uvp_cell_new = uvp_cell_new.detach()
-            self.uvp_node_new = uvp_node_new.detach()
-            
-            if self.niter % 1000 == 0:
-                self.graph_node.x[:,0:3] = self.uvp_node_new.detach()
-                self.graph_cell.x[:,0:3] = self.uvp_cell_new.detach()
-
-                # plot the result            
-                graph_list = Batch.to_data_list(self.graph_cell)
-                plot_graph = graph_list[self.plot_order].cpu()
-                self.datasets.export_to_tecplot(
-                    self.datasets.meta_pool[plot_graph.graph_index], 
-                    uvp = plot_graph.x[:,0:3],
-                    datalocation="cell"
+                self.graph_node.x = torch.cat((self.uvp_node.detach(),self.graph_node.backup_x), dim=-1)
+                self.graph_cell.x[:,0:self.params.node_phi_size] = self.uvp_cell.detach()
+                self.graph_node.norm_uvp = self.params.norm_uvp
+                self.graph_node.norm_global = self.params.norm_global
+                
+                (
+                    loss_cont,
+                    loss_mom_x,
+                    loss_mom_y,
+                    loss_press,
+                    uvp_node_new,
+                    uvp_cell_new,
+                ) = self.model(
+                    graph_node=self.graph_node,
+                    graph_node_x=self.graph_node_x,
+                    graph_edge=self.graph_edge,
+                    graph_cell=self.graph_cell,
+                    graph_Index=self.graph_Index,
+                    is_training=True,
                 )
-                self.plot_order += 1
-                self.plot_order = self.plot_order % params.batch_size
+
+                ''' back up exclude LSFD'''
+                loss_batch = (
+                    self.params.loss_press * loss_press
+                    + self.params.loss_cont * loss_cont
+                    + self.params.loss_mom * loss_mom_x
+                    + self.params.loss_mom * loss_mom_y
+                )
+                loss_batch_clamped = torch.clamp(loss_batch, min=1e-10, max=1e10)
+                loss = torch.mean(torch.log(loss_batch_clamped))
                 
-                self.graph_node.x[:,0:3] = torch.cat((self.graph_node.pos,self.graph_node.pos[:,0:1]),dim=-1)
-                self.graph_cell.x[:,0:3] = torch.cat((self.graph_cell.pos,self.graph_cell.pos[:,0:1]),dim=-1)
+                ''' back up exclude LSFD'''
                 
-            self.niter+=1
-            print(f"Inner iter {self.niter} Iteration Loss: {loss.item()} completed in {time.time() - inner_start:.2f} seconds")
+                # compute gradients
+                loss.backward()
+                
+                # 保存当前的输出用于下一轮迭代
+                self.uvp_cell_new = uvp_cell_new.detach()
+                self.uvp_node_new = uvp_node_new.detach()
+                    
+                inner_iter_count += 1
+                self.niter += 1
+                print(f"Epoch {epoch}, Inner iter {inner_iter_count}, Total iter {self.niter}, Loss: {loss.item():.6e}, Time: {time.time() - inner_start:.2f}s")
+                
+                return loss
             
-            return loss
+            # 执行LBFGS步骤
+            try:
+                self.optimizer.step(closure)
+            except Exception as e:
+                print(f"Error in LBFGS step at epoch {epoch}: {e}")
 
-        self.optimizer.step(closure)
+            # 可视化
+            if epoch % 10 == 0 or epoch == n_iterations - 1:  # 每10次迭代可视化一次
 
-        # 输出此epoch的处理时间
-        print(f"Epoch {self.niter} completed in {time.time() - start:.2f} seconds")
+                graph_list = Batch.to_data_list(self.graph_cell)
+                if len(graph_list) > 0:
+                    plot_graph = graph_list[0].cpu()  # 取第一个case
+                    
+                    # 使用最新的求解结果进行可视化
+                    plot_graph.x[:,0:3] = self.uvp_cell_new.cpu()
+                    
+                    # 获取mesh信息来构建文件名
+                    mesh = self.datasets.meta_pool[plot_graph.graph_index]
+                    case_name = mesh["case_name"]
+                    dt = mesh["dt"].squeeze().item()
+                    source = mesh["source"].squeeze().item()
+                    aoa = mesh["aoa"].squeeze().item()
+                    
+                    try:
+                        Re = mesh["Re"].squeeze().item()
+                    except:
+                        Re = 0
+                        print("Warning: No Re number in the mesh, set to 0")
+                    
+                    # 创建分组文件夹（每50次迭代一个文件夹）
+                    save_dir_num = epoch // 50
+                    saving_dir = f"{self.logger.saving_path}/traing_results/LBFGS_iter_{save_dir_num*50}-{(save_dir_num+1)*50}"
+                    os.makedirs(saving_dir, exist_ok=True)
+                    
+                    # 构建文件名，参照Graph_loader.py的格式
+                    file_name = f"{saving_dir}/iter_{epoch:06d}_{case_name}_Re={Re:.2f}_dt={dt:.3f}_source={source:.2f}_aoa={aoa:.2f}"
+                    
+                    # 使用datasets的export_to_tecplot方法进行可视化
+                    self.datasets.export_to_tecplot(
+                        mesh, 
+                        uvp=plot_graph.x[:,0:3],
+                        datalocation="cell",
+                        file_name=file_name
+                    )
+                    
+                    print(f"Visualization saved: {file_name}")
 
-        # save state after every 2 epoch
-        _ =self.logger.save_state(
-            model=self.model,
-            optimizer=None,
-            scheduler=None,
-            index=str(self.niter % 3),
-        )
-                
-        # plot all the results
-        self.graph_node.x[:,0:3] = self.uvp_node_new.detach()
-        self.graph_cell.x[:,0:3] = self.uvp_cell_new.detach()
-        graph_list = Batch.to_data_list(self.graph_cell)
-        for plot_graph in graph_list:
-            plot_graph = plot_graph.cpu()
-            self.datasets.export_to_tecplot(
-                self.datasets.meta_pool[plot_graph.graph_index], 
-                uvp = plot_graph.x[:,0:3],
-                datalocation="cell"
-            )    
+            # 输出此epoch的处理时间
+            print(f"Epoch {epoch} completed in {time.time() - epoch_start:.2f} seconds")
+
+            # 保存模型状态
+            if epoch % 10 == 0 or epoch == n_iterations - 1:
+                _ = self.logger.save_state(
+                    model=self.model,
+                    optimizer=None,
+                    scheduler=None,
+                    index=str(epoch % 3),
+                )
+                print(f"Model state saved at epoch {epoch}")
              
         print(f"Training completed in {time.time() - t1_start:.2f} seconds")
         
@@ -185,8 +212,12 @@ if __name__=="__main__":
     torch.cuda.set_per_process_memory_fraction(0.8, params.on_gpu)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    params.dataset_dir = "datasets/lid_driven/lid_driven_cavity_161x161 copy"
-    params.integrator = "implicit"
+    ''' >>> 单独设置参数 >>> '''
+    params.dataset_dir = "datasets/lid_driven_cavity/lid_driven_cavity_101x101"
+    params.integrator = "imex"
+    params.norm_global = False # 默认为False，表示不对全局条件进行归一化
+    params.batch_size = 1 # LBFGS专用：设置批次大小为1（单case求解）
+    ''' <<< 单独设置参数 <<< '''
     
     # initialize Logger and load model / optimizer if according parameters were given
     logger = Logger(
@@ -210,9 +241,9 @@ if __name__=="__main__":
     # refresh dataset size
     params.dataset_size = datasets_factory.dataset_size
 
-    # create dataset objetc
+    # create dataset objetc - 使用batch_size=1确保每次只处理一个case
     datasets, loader, sampler = datasets_factory.create_datasets(
-        batch_size=params.batch_size, num_workers=0, pin_memory=False
+        batch_size=1, num_workers=0, pin_memory=False
     )
 
     end = time.time()
@@ -224,7 +255,7 @@ if __name__=="__main__":
     fluid_model = model.to(device)
     fluid_model.train()
 
-
+    """ >>> load state from old date >>> """
     if (
         params.load_date_time is not None
         or params.load_index is not None
@@ -241,7 +272,7 @@ if __name__=="__main__":
         params.load_index = int(params.load_index)
         print(f"loaded: {params.load_date_time}, {params.load_index}")
     params.load_index = 0 if params.load_index is None else params.load_index
-
+    """ <<< load state from old date <<< """
 
     trainer = Trainer(
         params = params, 
@@ -251,6 +282,8 @@ if __name__=="__main__":
         datasets = datasets, 
         device = device)
 
-    trainer.train(1000)
+    # 使用LBFGS求解器进行迭代 - 先用较少的迭代次数测试
+    n_iterations = 10  # 减少迭代次数进行测试
+    trainer.train(n_iterations)
     
     print("Training completed")

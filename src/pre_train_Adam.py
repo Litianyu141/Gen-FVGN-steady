@@ -1,3 +1,6 @@
+import faulthandler
+faulthandler.enable()
+
 import sys
 import os
 
@@ -34,7 +37,6 @@ torch.manual_seed(seed)
 torch.cuda.set_per_process_memory_fraction(0.99, params.on_gpu)
 torch.set_num_threads(os.cpu_count() // 2)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 
 # initialize Logger and load model / optimizer if according parameters were given
 logger = Logger(

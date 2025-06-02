@@ -648,71 +648,32 @@ class TecplotMesh(Basemanager):
             self.extract_pipe_flow_boundary(
                 mesh_boundary_pos=self.boundary_mesh_info["mesh_pos"]
             )
-            
-        self.save_to_vtu(
-            mesh=self.mesh_info, 
-            payload={"node|node_type": self.node_type}, 
-            file_name=f"{self.file_dir}/node_type_with_mesh.vtu",
-        )
-        # self.plot_state(self.mesh_info["mesh_pos"],self.mesh_info["face_node"],node_type = self.node_type)
-
-        if mesh_only:
-            mesh = {
-                "node|pos": torch.from_numpy(self.mesh_pos),
-                "node|surf_mask": torch.from_numpy(self.surf_mask).bool().squeeze(),
-                "node|node_type": torch.from_numpy(self.node_type).long().squeeze(),
-                "face|face_node": torch.from_numpy(self.mesh_info["face_node"]).long().transpose(0, 1),
-                "cells_node": self.mesh_info["cells_node"].long().squeeze(),
-                "cells_index": self.mesh_info["cells_index"].long().squeeze(),
-                "cells_face": self.mesh_info["cells_face"].long().squeeze(),
-            }
         else:
-            # velocity = torch.index_select(
-            #     torch.from_numpy(self.data_velocity),
-            #     1,
-            #     torch.from_numpy(self.earrange_index).to(torch.long),
-            # )
-            # pressure = torch.index_select(
-            #     torch.from_numpy(self.data_pressure),
-            #     1,
-            #     torch.from_numpy(self.rearrange_index).to(torch.long),
-            # )
-            # mesh = {
-            #     "mesh_pos": torch.from_numpy(self.mesh_pos)
-            #     .to(torch.float64)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "boundary": torch.from_numpy(self.mesh_boundary_index)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "cells_node": torch.from_numpy(self.cells_node)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "cells_index": torch.from_numpy(self.cells_index)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "cells_face_node": torch.from_numpy(self.cells_face_node)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "node_type": torch.from_numpy(self.node_type)
-            #     .to(torch.long)
-            #     .unsqueeze(0)
-            #     .repeat(1, 1, 1),
-            #     "velocity": velocity[0:600].astype(np.float64),
-            #     "pressure": pressure[0:600].astype(np.float64),
-            # }
-            pass
+            raise  ValueError("Not support this case, only pipe flow boundary allowed")
+
+        mesh = {
+            "node|pos": torch.from_numpy(self.mesh_pos),
+            "node|surf_mask": torch.from_numpy(self.surf_mask).bool().squeeze(),
+            "node|node_type": torch.from_numpy(self.node_type).long().squeeze(),
+            "face|face_node": torch.from_numpy(self.mesh_info["face_node"]).long().transpose(0, 1),
+            "cells_node": self.mesh_info["cells_node"].long().squeeze(),
+            "cells_index": self.mesh_info["cells_index"].long().squeeze(),
+            "cells_face": self.mesh_info["cells_face"].long().squeeze(),
+        }
 
         # There`s face_center_pos, centroid, face_type, neighbour_cell, face_node_x need to be resolved
         h5_dataset = extract_mesh_state(
             mesh,
             path=self.path,
         )
-
+        
+        # 之所以再最后才绘制网格是因为，再extract_mesh_state中进行了Cells_node和cells_face的逆时针矫正，最后绘制可以看到矫正结果
+        self.save_to_vtu(
+            mesh=h5_dataset, 
+            payload={"node|node_type": self.node_type}, 
+            file_name=f"{self.file_dir}/node_type_with_mesh.vtu",
+        )
+        
         return h5_dataset
 
 
@@ -777,13 +738,13 @@ if __name__ == "__main__":
     # for debugging
 
     debug_file_path = None
-    # debug_file_path = "datasets/cylinder_flow/cylinder_flow_poly_Re=1-10/cylinder_poly.dat"
+    # debug_file_path = "datasets/cylinder_flow_poly_new_wall_Re=10-30/mesh.dat"
 
     case = 0  # 0 stands for 980/PM9A1
     if case == 0:
         path = {
             "simulator": "StarCCM+",
-            "tecplot_dataset_path": "datasets/cylinder_flow",
+            "tecplot_dataset_path": "datasets/cylinder_flow_poly_new_wall_Re=10-30",
             "mesh_only": True,
         }
 
@@ -792,12 +753,14 @@ if __name__ == "__main__":
     file_paths = []
     for subdir, _, files in os.walk(path["tecplot_dataset_path"]):
         for data_name in files:
-            if data_name.endswith(".mphtxt") or data_name.endswith(".dat"):
+            if data_name.endswith(".dat"):
                 file_paths.append(os.path.join(subdir, data_name))
 
     # 统计选中的文件总数
     total_samples = len(file_paths)
     print("total samples: ", total_samples)
+    assert total_samples > 0, "Found no mesh files"
+
 
     if debug_file_path is not None:
         multi_process = 1
@@ -818,17 +781,12 @@ if __name__ == "__main__":
 
         if debug_file_path is not None:
             # for debuging
-            results = [
-                pool.apply_async(
-                    process_file,
-                    args=(
+            results = process_file(
                         0,
                         debug_file_path,
                         path,
                         queue,
                     ),
-                )
-            ]
         else:
             # Process files in parallel
             results = [
@@ -844,9 +802,9 @@ if __name__ == "__main__":
                 for file_index, file_path in enumerate(file_paths)
             ]
 
-        # Wait for all processing processes to finish
-        for res in results:
-            res.get()
+            # Wait for all processing processes to finish
+            for res in results:
+                res.get()
 
         # Send sentinel value to terminate writer process
         queue.put((None, None, None))
