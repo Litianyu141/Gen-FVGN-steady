@@ -1065,5 +1065,5 @@ class DatasetFactory:
             num_workers=num_workers,
             pin_memory=pin_memory,
         )
-
-        return custom_loader
+        
+        return self.base_dataset, custom_loader, shared_sampler
