@@ -4,6 +4,7 @@
     "outflow":null,
     "pressure_point":null,
     "surf":null,
+    "periodic":null,
     "stencil|BC_extra_points":4,
     "stencil|khops":2,
     "theta_PDE":{

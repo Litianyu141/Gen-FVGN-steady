@@ -3,6 +3,7 @@
     "wall":[2, 3, "5-8"],
     "outflow":[4],
     "pressure_point":null,
+    "periodic":null,
     "surf":["5-8"],
     "stencil|BC_extra_points":4,
     "stencil|khops":2,
