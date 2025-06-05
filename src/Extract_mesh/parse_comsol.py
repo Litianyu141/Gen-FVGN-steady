@@ -448,9 +448,9 @@ class Cosmol_manager(Basemanager):
         
         edge_sorted = np.sort(edge_unordered,axis=1).T
 
-        unique_edge,cells_face = np.unique(edge_sorted,axis=1,return_inverse=True)
+        # unique_edge,cells_face = np.unique(edge_sorted,axis=1,return_inverse=True)
         
-        return unique_edge,cells_face
+        return edge_sorted
 
     def extract_mesh(self, mesh_only=True):
 
@@ -462,8 +462,8 @@ class Cosmol_manager(Basemanager):
         cells_index = []
         face_node = []
         cells_face = []
+        edge_index_full_list = []
         count_cells = 0
-        count_faces = 0
         for elem_type in ["tri", "quad"]:
             if elem_type in self.mesh_file:
                 elem_data = self.mesh_file[elem_type]
@@ -477,15 +477,15 @@ class Cosmol_manager(Basemanager):
                 cells_index.append(cell_index)
                 count_cells+=elements.shape[0]
 
-                unique_edge, cell_face = self.element_to_faces(elements=elements)
-                face_node.append(unique_edge)
-                cells_face.append(cell_face+count_faces)
-                count_faces+=unique_edge.shape[1]
+                # unique_edge, cell_face = self.element_to_faces(elements=elements)
+                edge_sorted = self.element_to_faces(elements=elements)
+                edge_index_full_list.append(edge_sorted)
                 
+        edge_index_full = np.concatenate(edge_index_full_list,axis=1).squeeze()
+        face_node,cells_face = np.unique(edge_index_full,axis=1,return_inverse=True)
         cells_node = np.concatenate(cells_node).squeeze()
         cells_index = np.concatenate(cells_index).squeeze()
-        face_node = np.concatenate(face_node,axis=1).squeeze()
-        cells_face = np.concatenate(cells_face,axis=0).squeeze()
+
         """ compose cells_node, cells_index and edge_index"""
         # fmt: on
         
