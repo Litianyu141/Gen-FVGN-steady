@@ -17,7 +17,7 @@ with the number of iterations required to reach a steady-state solution being on
 
 > Update (06.02.2025): Released poly mesh support (FIXED boundary setting), update necessary code comment.
 
-> Update (06.11.2025): Released cell-centered branch (tri-quad).
+> Update (06.11.2025): Released cell-centered branch (`git checkout dev-cell-centered` and re-run parse_xxx.py).
 # Catalog
 
 - [Learning to Solve PDEs with Finite Volume-Informed Neural Networks in a Data-Free Approach](#learning-to-solve-pdes-with-finite-volume-informed-neural-networks-in-a-data-free-approach)
