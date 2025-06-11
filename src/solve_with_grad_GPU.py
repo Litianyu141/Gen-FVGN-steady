@@ -15,7 +15,7 @@ from Utils import get_param, scheduler
 import time
 from Utils.get_param import get_hyperparam
 from Utils.Logger import Logger
-from FVMmodel.FVdiscretization.FVgrad import node_based_WLSQ
+from FVMmodel.FVdiscretization.FVgrad import weighted_lstsq
 from torch_geometric.data.batch import Batch
 import random
 import datetime
@@ -113,16 +113,16 @@ params.load_index = 0 if params.load_index is None else params.load_index
 """ <<< load state from old date <<< """
 
 ''' >>> fetch data and move to GPU >>> '''
-(graph_node,graph_node_x,graph_edge,graph_cell,graph_Index) = next(iter(loader))
+(graph_node,graph_cell_x,graph_edge,graph_cell,graph_Index) = next(iter(loader))
 (
     graph_node,
-    graph_node_x,
+    graph_cell_x,
     graph_edge,
     graph_cell,
     graph_Index,
 ) = datasets.datapreprocessing(
     graph_node=graph_node.cuda(),
-    graph_node_x=graph_node_x.cuda(),
+    graph_cell_x=graph_cell_x.cuda(),
     graph_edge=graph_edge.cuda(),
     graph_cell=graph_cell.cuda(),
     graph_Index=graph_Index.cuda(),
@@ -156,7 +156,7 @@ for epoch in range(params.n_epochs+1):
             uvp_cell_new,
         ) = fluid_model(
             graph_node=graph_node,
-            graph_node_x=graph_node_x,
+            graph_cell_x=graph_cell_x,
             graph_edge=graph_edge,
             graph_cell=graph_cell,
             graph_Index=graph_Index,
@@ -183,7 +183,7 @@ for epoch in range(params.n_epochs+1):
     graph_node.x[:,0:3] = uvp_node_new.detach()
     graph_cell.x[:,0:3] = uvp_cell_new.detach()  
 
-    graph_node_x_list = Batch.to_data_list(graph_node_x)
+    graph_cell_x_list = Batch.to_data_list(graph_cell_x)
     graph_cell_list = Batch.to_data_list(graph_cell)
     
     for plot_order in range(len(graph_cell_list)):

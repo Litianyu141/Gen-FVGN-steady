@@ -5,12 +5,16 @@ import os
 file_dir = os.path.dirname(os.path.dirname(__file__))
 sys.path.append(file_dir)
 
-from torch.utils.data import Dataset
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("agg")
+    
+import matplotlib.pyplot as plt
+import networkx as nx
+
 import json
 import random
 import torch
+from torch.utils.data import Dataset
 import numpy as np
 import h5py
 import math
@@ -20,6 +24,7 @@ from Utils.utilities import (
     calc_cell_centered_with_node_attr,
     calc_node_centered_with_cell_attr,
 )
+
 from Utils.utilities import NodeType
 from Extract_mesh.parse_to_h5 import seperate_domain,build_k_hop_edge_index
 from torch_geometric.nn import knn_graph,knn,radius,radius_graph,knn_interpolate
@@ -82,53 +87,47 @@ class CFDdatasetBase:
         mean_u=None,
     ):
         # init node uvp
-        node_pos = mesh["node|pos"]
-        uv_node, p_node = velocity_profile(
-            inlet_node_pos=node_pos,
+        # centroid = mesh["cell|centroid"].to(torch.float32)
+        cpd_centroid = mesh["cpd|centroid"].to(torch.float32)
+
+        uv_cell, p_cell = velocity_profile(
+            inlet_node_pos=cpd_centroid,
             mean_u=mean_u,
             aoa=mesh["aoa"],
             inlet_type=mesh["init_field_type"],
         )
         
         # set uniform initial field value
-        uvp_node = torch.cat(
+        uvp_cell = torch.cat(
             (
-                uv_node, 
-                p_node
+                uv_cell, 
+                p_cell
             ),
             dim=1
         ).to(torch.float32)
         
         # generate BC mask
-        node_type = mesh["node|node_type"].long().squeeze()
-        Wall_mask = (node_type == NodeType.WALL_BOUNDARY)
-        Inlet_mask = (node_type == NodeType.INFLOW)|(node_type==NodeType.IN_WALL)|(node_type==NodeType.PRESS_POINT)
-        In_wall_mask = (node_type == NodeType.IN_WALL)
+        cell_type = mesh["cpd|cell_type"].long().squeeze()
+        Wall_mask = (cell_type== NodeType.WALL_BOUNDARY)
+        Inlet_mask =(cell_type== NodeType.INFLOW)
         
         # generate velocity profile
-        inlet_uvp_node, _ = velocity_profile(
-            inlet_node_pos=node_pos[Inlet_mask],
+        inlet_uvp_face, _ = velocity_profile(
+            inlet_node_pos=cpd_centroid[Inlet_mask],
             mean_u=mean_u,
             aoa=mesh["aoa"],
             inlet_type=mesh["inlet_type"],
         )
-        inlet_uvp_node = inlet_uvp_node.to(torch.float32)
+        inlet_uvp_face = inlet_uvp_face.to(torch.float32)
         
         # apply velocity profile and boundary condition
-        uvp_node[Inlet_mask,0:2] = inlet_uvp_node[:,0:2]
-        uvp_node[Wall_mask,0:2] = 0
-        uvp_node[In_wall_mask] = uvp_node[In_wall_mask]/2.
+        uvp_cell[Inlet_mask,0:2] = inlet_uvp_face[:,0:2]
+        uvp_cell[Wall_mask,0:2] = 0
 
         # store target node for dirchlet BC and make dimless if possible
-        mesh["target|uvp"] = uvp_node[:,0:2].clone() / mean_u
+        mesh["target|uvp"] = uvp_cell[:,0:2].clone() / mean_u
  
-        # # interpolate init field to cell
-        # centroid = mesh["cell|centroid"]
-        # uvp_cell = knn_interpolate(
-        #     x = uvp_node, pos_x = node_pos, pos_y = centroid, k=8
-        # ).to(torch.float32)
-        
-        return mesh, uvp_node
+        return mesh, uvp_cell
 
     @staticmethod
     def set_theta_PDE(mesh, params, mean_velocity, rho, mu, source, aoa, dt, dL):
@@ -246,28 +245,25 @@ class CFDdatasetBase:
     @staticmethod
     def calc_WLSQ_A_B_normal_matrix(mesh, order):
 
-        if not "A_node_to_node" in mesh.keys():
+        if not "A_cell_to_cell" in mesh.keys():
             
-            """>>> compute WLSQ node to node left A matrix >>>"""
-            mesh_pos = mesh["node|pos"]
-            face_node_x = mesh["face_node_x"].long()
-            support_edge = mesh["support_edge"].long()
+            """>>> compute WLSQ cell to cell left A matrix >>>"""
+            cpd_centroid = mesh["cpd|centroid"]
+            neighbor_cell_x = mesh["neighbor_cell_x"].long()
 
-            """ >>> compute WLSQ node to node left A matrix >>> """
-            (A_node_to_node, two_way_B_node_to_node, single_way_B_node_to_node) = compute_normal_matrix(
+            """ >>> compute WLSQ cell to cell left A matrix >>> """
+            (A_cell_to_cell, two_way_B_cell_to_cell) = compute_normal_matrix(
                 order=order,
-                mesh_pos=mesh_pos,
-                edge_index=face_node_x, # 默认应该是仅包含1阶邻居点+构成共点的单元的所有点
-                extra_edge_index=support_edge, # 额外的模板。例如内部点指向边界点
+                mesh_pos=cpd_centroid,
+                edge_index=neighbor_cell_x, # 默认应该是仅包含1阶邻居点+构成共点的单元的所有点
                 periodic_idx=None,
             )
             
-            mesh["A_node_to_node"] = A_node_to_node.to(torch.float32)
-            mesh["single_B_node_to_node"] = (
-                torch.chunk(two_way_B_node_to_node, 2, dim=0)[0]
+            mesh["A_cell_to_cell"] = A_cell_to_cell.to(torch.float32)
+            mesh["single_B_cell_to_cell"] = (
+                torch.chunk(two_way_B_cell_to_cell, 2, dim=0)[0]
             ).to(torch.float32)
-            mesh["extra_B_node_to_node"] = single_way_B_node_to_node.to(torch.float32)
-            """ <<< compute WLSQ node to node right B matrix<<< """
+            """ <<< compute WLSQ cell to cell right B matrix<<< """
 
         return mesh
 
@@ -275,14 +271,14 @@ class CFDdatasetBase:
     def calc_WLSQ_A_B_matrix(mesh):
 
         if not "R_inv_Q_t" in mesh.keys():
-            """>>> compute WLSQ node to node R_inv_Q_t matrix >>>"""
+            """>>> compute WLSQ cell to cell R_inv_Q_t matrix >>>"""
             mesh_pos = mesh["mesh_pos"][0]
-            node_neigbors = mesh["node_neigbors"][0].to(torch.long)
+            node_neighbors = mesh["node_neighbors"][0].to(torch.long)
             max_neighbors = mesh["max_neighbors"]
 
-            mask_fil = (node_neigbors != -1).unsqueeze(2)
-            neigbor_pos = mesh_pos[node_neigbors] * mask_fil
-            moments_left = neigbor_pos - mesh_pos.unsqueeze(1)
+            mask_fil = (node_neighbors != -1).unsqueeze(2)
+            neighbor_pos = mesh_pos[node_neighbors] * mask_fil
+            moments_left = neighbor_pos - mesh_pos.unsqueeze(1)
             weight_unfiltered = 1.0 / torch.norm(moments_left, dim=2, keepdim=True)
             weight = (
                 torch.where(torch.isfinite(weight_unfiltered), weight_unfiltered, 0.0)
@@ -318,13 +314,13 @@ class CFDdatasetBase:
                     ),
                     dim=2,
                 )
-                node_neigbors = torch.cat(
+                node_neighbors = torch.cat(
                     (
-                        node_neigbors,
+                        node_neighbors,
                         torch.full(
-                            (node_neigbors.shape[0], max_neighbors - A.shape[1]),
+                            (node_neighbors.shape[0], max_neighbors - A.shape[1]),
                             -1,
-                            device=node_neigbors.device,
+                            device=node_neighbors.device,
                         ),
                     ),
                     dim=1,
@@ -347,8 +343,8 @@ class CFDdatasetBase:
                 mask_fil = torch.where(mask_fil, 1.0, 0.0)
 
             mesh["R_inv_Q_t"] = R_inv_Q_t.unsqueeze(0).to(torch.float32)
-            mesh["node_neigbors"] = node_neigbors.unsqueeze(0)
-            mesh["mask_node_neigbors_fil"] = mask_fil.unsqueeze(0)
+            mesh["node_neighbors"] = node_neighbors.unsqueeze(0)
+            mesh["mask_node_neighbors_fil"] = mask_fil.unsqueeze(0)
 
         return mesh
 
@@ -392,104 +388,52 @@ class CFDdatasetBase:
 
         return normalized
 
-    @staticmethod
-    def To_Cartesian(mesh, resultion:tuple):
-
-        if "grids" not in mesh.keys():
-            
-            L,K = resultion
-            mesh_pos = mesh["mesh_pos"][0].to(torch.float32)
-            
-            xmax = torch.max(mesh_pos[:,0])
-            xmin = torch.min(mesh_pos[:,0])
-            ymin = torch.min(mesh_pos[:,1])
-            ymax = torch.max(mesh_pos[:,1])
-
-            grid_y, grid_x= torch.meshgrid(torch.linspace(ymin, ymax, L), 
-                                           torch.linspace(xmin, xmax, K),
-                                           indexing='ij')
-            
-            grid_points = torch.stack((grid_x, grid_y), dim=-1)
-
-            mesh["grids"] = grid_points.unsqueeze(0).to(torch.float32)
-            
-            mesh["query"] = CFDdatasetBase.normalize_coords(mesh_pos.clone()).unsqueeze(0)
-            
-        return mesh
     
     @staticmethod
     def construct_stencil(
         mesh, 
         k_hop=2,
-        BC_interal_neigbors=4,
+        BC_interal_neighbors=4,
         order=None,
     ):
-        if not "support_edge" in mesh.keys():
-            mesh_pos = mesh["node|pos"]
-            face_node = mesh["face|face_node"].long().squeeze()
-            node_type = mesh["node|node_type"].long().squeeze()
-            face_node_x = mesh["face_node_x"].long().to(torch.long)
+        if not "neighbor_cell_x" in mesh.keys():
 
-            BC_mask = ((node_type==NodeType.WALL_BOUNDARY)|
-                       (node_type==NodeType.INFLOW)|
-                       (node_type==NodeType.OUTFLOW)|
-                       (node_type==NodeType.PRESS_POINT)|
-                       (node_type==NodeType.IN_WALL)).squeeze()
-
-            
-            ''' including other boundary points '''
-            # node_index = torch.arange(mesh_pos.shape[0])
-            # BC_edge_index = knn(x=mesh_pos, y=mesh_pos[BC_mask], k=BC_interal_neigbors)
-            # filter_self_loop = (BC_edge_index[1]==node_index[BC_mask][BC_edge_index[0]]).squeeze()
-            # BC_edge_index = torch.stack((BC_edge_index[1], node_index[BC_mask][BC_edge_index[0]]), dim=0)
-            # BC_edge_index = BC_edge_index[:,~filter_self_loop]
-            # BC_edge_index = BC_edge_index[:,~(BC_edge_index[0]==BC_edge_index[1])]
-            ''' including other boundary points '''
-            
-            ''' exclude other boundary points '''
-            # node_index = torch.arange(mesh_pos.shape[0])
-            # BC_edge_index = knn(x=mesh_pos[~BC_mask], y=mesh_pos[BC_mask], k=BC_interal_neigbors)
-            # BC_edge_index = torch.stack((node_index[~BC_mask][BC_edge_index[1]], node_index[BC_mask][BC_edge_index[0]]), dim=0)
-            # BC_edge_index = BC_edge_index[:,~(BC_edge_index[0]==BC_edge_index[1])]
-            ''' exclude other boundary points '''
-
-            ''' only internal node to boundary node edge '''
-            # extra_edge_index = []
-            # for k in range(1, k_hop+1):
-            #     extra_edge_index.append(build_k_hop_edge_index(torch.cat((face_node,face_node.flip(0)),dim=1),k=k))
-            # extra_edge_index = torch.cat((extra_edge_index), dim=1) # 此时刚出k-hop是包含所有内部边的且dual edge的
-            # extra_edge_index = extra_edge_index[:,
-            #                                     (BC_mask[extra_edge_index[0]]&(~BC_mask[extra_edge_index[1]]))|\
-            #                                     (BC_mask[extra_edge_index[1]]&(~BC_mask[extra_edge_index[0]]))|\
-            #                                     (BC_mask[extra_edge_index[0]]&(BC_mask[extra_edge_index[1]]))
-            # ] # 先选出仅为内部指向边界或者边界指向内部的边
-            # extra_edge_index = torch.unique(extra_edge_index[:,~(extra_edge_index[0]==extra_edge_index[1])].sort(0)[0],dim=1) # 排除自环然后收缩为单向边
-            
-            # extra_edge_index_mirror = extra_edge_index.flip(0) 
-            # internal_to_boundary = torch.where(
-            #     BC_mask[extra_edge_index[0]][None,].repeat(2,1),extra_edge_index_mirror,extra_edge_index
-            # ) # 然后调整指向，保证只有内部点（dim=0的0）指向边界点（dim=0的1）
-            ''' only internal node to boundary node edge '''
+            cpd_neighbor_cell = mesh["cpd|neighbor_cell"].long()
+            cell_type = mesh["cpd|cell_type"].long().squeeze()
+            BC_face_mask = ~(cell_type==NodeType.NORMAL)
             
             ''' 全局调用k-hop edge '''
             extra_edge_index = []
+            twoway_cpd_neighbor_cell = torch.cat((cpd_neighbor_cell,cpd_neighbor_cell.flip(0)),dim=1)
             for k in range(1, k_hop+1):
-                extra_edge_index.append(build_k_hop_edge_index(torch.cat((face_node,face_node.flip(0)),dim=1),k=k))
+                extra_edge_index.append(build_k_hop_edge_index(twoway_cpd_neighbor_cell,k=k))
             extra_edge_index = torch.cat((extra_edge_index), dim=1) # 此时刚出k-hop是包含所有内部边的且dual edge的
             # extra_edge_index = extra_edge_index[:,~(BC_mask[extra_edge_index[0]]&(BC_mask[extra_edge_index[1]]))] # 先排除边界指向边界的边ss
             extra_edge_index_unique = torch.unique(
                 extra_edge_index[:,~(extra_edge_index[0]==extra_edge_index[1])].sort(0)[0],
                 dim=1
-            ) # 排除自环然后收缩为单向边
+            ) # 排除自环然后收缩为单向边, 注意这里的extra edge是即包含boundary face也包含interior cell的
 
-            mesh["face_node_x"] = torch.cat((face_node_x, extra_edge_index_unique), dim=1)
-            mesh["support_edge"] = torch.tensor([[0,1],[1,0]]).to(mesh_pos.device) # 2025.5.30:临时解决方案，现在放弃使用extra_edge模板了，直接全局k-hop放入face_node_x中
+            # boundary face needs extra k-hop+1 edge for a wider stencil
+            extra_boundary_edge = build_k_hop_edge_index(twoway_cpd_neighbor_cell,k=k+1)
+            extra_boundary_edge = extra_boundary_edge[:,
+                (BC_face_mask[extra_boundary_edge[0]]&(~BC_face_mask[extra_boundary_edge[1]])) |\
+                (~BC_face_mask[extra_boundary_edge[0]]&(BC_face_mask[extra_boundary_edge[1]])) |\
+                (BC_face_mask[extra_boundary_edge[0]]&(BC_face_mask[extra_boundary_edge[1]]))
+            ] # only those connected with boudary face`s edge will be saved
+            
+            extra_boundary_edge_unique = torch.unique(
+                extra_boundary_edge[:,~(extra_boundary_edge[0]==extra_boundary_edge[1])].sort(0)[0],
+                dim=1
+            )
+            
+            mesh["neighbor_cell_x"] = torch.cat((cpd_neighbor_cell, extra_edge_index_unique, extra_boundary_edge_unique), dim=1)
             ''' 全局调用k-hop edge '''
             
             ''' 检查模板并绘制'度'的分布 '''
             # # start plotting
             # support_edge = torch.cat((
-            #     face_node_x, 
+            #     neighbor_cell_x, 
             #     internal_to_boundary
             # ), dim=1)
             # in_degree = pyg_utils.degree(support_edge[1], num_nodes=mesh_pos.shape[0])
@@ -516,8 +460,6 @@ class CFDdatasetBase:
             # )
             ''' 检查模板并绘制度分布 '''
             
-            # mesh["support_edge"] = internal_to_boundary
-            
         return mesh
     
     @staticmethod
@@ -539,13 +481,13 @@ class CFDdatasetBase:
         mesh = CFDdatasetBase.construct_stencil(
             mesh, 
             k_hop=mesh["stencil|khops"], 
-            BC_interal_neigbors=mesh["stencil|BC_extra_points"],
+            BC_interal_neighbors=mesh["stencil|BC_extra_points"],
             order=params.order,
         )
 
         mesh = CFDdatasetBase.calc_WLSQ_A_B_normal_matrix(mesh,params.order)
         
-        mesh, init_uvp_node = CFDdatasetBase.init_env(
+        mesh, init_uvp_cell = CFDdatasetBase.init_env(
             mesh,        
             mean_u=mean_u,
         )
@@ -562,7 +504,7 @@ class CFDdatasetBase:
             )
             mesh["boundary_zone"] = boundary_zone
 
-        return mesh, init_uvp_node
+        return mesh, init_uvp_cell
 
 class H5CFDdataset(Dataset):
     def __init__(self, params, file_list):
@@ -613,13 +555,13 @@ class H5CFDdataset(Dataset):
         mesh["theta_PDE_list"] = theta_PDE_list
         
         # start to calculate other attributes like stencil, WLSQ matrix, etc.
-        mesh_transformed, init_uvp_node = CFDdatasetBase.transform_mesh(
+        mesh_transformed, init_uvp_cell = CFDdatasetBase.transform_mesh(
             mesh, 
             self.params
         )
 
         # return to CPU!
-        return mesh_transformed, init_uvp_node 
+        return mesh_transformed, init_uvp_cell 
 
     def __len__(self):
         return len(self.file_list)

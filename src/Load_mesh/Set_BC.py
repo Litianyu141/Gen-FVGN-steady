@@ -62,7 +62,11 @@ def velocity_profile(
     elif None==inlet_type: # wave equation has no inlet velocity
         inlet_field[:, 0:2] = 0.
         Warning("No inlet velocity type is specified")
-        
+    else:
+        raise RuntimeError("No support for this inlet type")
+    
+    pressure_field = torch.norm(inlet_field,dim=1,keepdim=True)**2
+    
     return inlet_field.to(torch.float32), pressure_field.to(torch.float32)
 
 def generate_pressure_source(

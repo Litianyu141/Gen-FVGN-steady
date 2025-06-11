@@ -37,18 +37,18 @@ class AttnProcessor(nn.Module):
     def forward(self, latent_graph_node, graph_edge):
         
         # 先处理第一个模型
-        node_embedding = latent_graph_node.x  # 不需要clone
-        latent_graph_node_GN = self.GN_block_list[0](latent_graph_node)
+        node_embedding = latent_graph_node.x.clone()  # 不需要clone
+
         # 处理剩余的模型
-        for model in self.GN_block_list[1:]:
-            latent_graph_node_GN = model(latent_graph_node_GN)
+        for model in self.GN_block_list:
+            latent_graph_node = model(latent_graph_node)
             
-        latent_graph_node_GN.x = self.TransBlock(
-            latent_graph_node_GN.x + node_embedding,
-            latent_graph_node_GN.batch,
+        latent_graph_node.x = self.TransBlock(
+            latent_graph_node.x + node_embedding,
+            latent_graph_node.batch,
         )
         
-        return latent_graph_node_GN
+        return latent_graph_node
 
 
 class Simulator(nn.Module):
@@ -86,7 +86,7 @@ class Simulator(nn.Module):
             node_output_size=node_output_size,
         )
         
-    @torch.compile
+    # @torch.compile
     def forward(
         self,
         graph_node=None,
@@ -94,12 +94,12 @@ class Simulator(nn.Module):
         graph_cell=None,
     ):
 
-        latent_graph_node, node_embedding = self.encoder(graph_node)
+        latent_graph_cell, cell_embedding = self.encoder(graph_cell)
 
         for _, model in enumerate(self.processpr_list):
 
-            latent_graph_node = model(latent_graph_node, graph_edge)
+            latent_graph_cell = model(latent_graph_cell, graph_edge)
 
-        pred_node = self.decoder(latent_graph_node)
+        pred_cell = self.decoder(latent_graph_cell)
 
-        return pred_node
+        return pred_cell

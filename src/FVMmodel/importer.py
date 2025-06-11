@@ -2,8 +2,8 @@ import torch
 import numpy as np
 import torch.nn as nn
 from torch_scatter import scatter_mean,scatter_min,scatter_max
-from utils.utilities import NodeType
-from utils.normalization import Normalizer
+from Utils.utilities import NodeType
+from Utils.normalization import Normalizer
 from FVMmodel.FVdiscretization.FVscheme import Intergrator
 from timm.layers import trunc_normal_
 
@@ -61,8 +61,8 @@ class NNmodel(nn.Module):
             - graph.x[receivers]
         )
         releative_x_pos = (
-            graph.pos[senders]
-            - graph.pos[receivers]
+            graph.cpd_centroid[senders]
+            - graph.cpd_centroid[receivers]
         )
         releative_x_attr = torch.cat(
             (
@@ -92,42 +92,23 @@ class NNmodel(nn.Module):
         
         return x
     
-    # def normalize_graph_features(self, x, batch):
-    #     # 检查输入张量和 batch 索引的形状
-    #     assert x.dim() == 2, "Input tensor x should be 2-dimensional"
-    #     assert batch.dim() == 1, "Batch tensor should be 1-dimensional"
-    #     assert x.size(0) == batch.size(0), "The first dimension of x and batch should be the same"
-
-    #     # 计算每个 batch 的最小值和最大值
-    #     min_val = scatter_min(x, batch, dim=0)[0]
-    #     max_val = scatter_max(x, batch, dim=0)[0]
-    #     # 计算每个元素的归一化值
-    #     range_val = max_val - min_val
-    #     x = ((x - min_val[batch]) / (range_val[batch] + 1e-8))*10.
-        
-    #     # 这里特别为泰勒格林涡算例去掉了除以max-min，使得神经网络可以感知到流场只在decaying
-    #     # update: 这里不能去掉正则化，因为如果Taylor-Green一直在衰减，会导致输入的值特别小，导致模型无法训练
-    #     x = x - min_val[batch]
-
-    #     return x
-    
     def update_x_attr(
         self,
-        graph_node,
+        graph_cell,
         graph_Index,
     ):
 
-        if graph_node.norm_uvp: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
-            graph_node.x[:,:self.node_phi_size] = self.normalize_graph_features(graph_node.x[:,:self.node_phi_size], graph_node.batch)
-            graph_node.norm_uvp=False
+        if graph_cell.norm_uvp: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
+            graph_cell.x[:,:self.node_phi_size] = self.normalize_graph_features(graph_cell.x[:,:self.node_phi_size], graph_cell.batch)
+            graph_cell.norm_uvp=False
         else:
             raise ValueError(" src/FVMmodel/importer.py The graph node features have already been normalized, please check the graph.norm_uvp")
         
-        if graph_node.norm_global: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
-            graph_node.x[:,self.node_phi_size:] = self.node_norm(graph_node.x[:,self.node_phi_size:])
-            graph_node.norm_global=False
+        if graph_cell.norm_global: # This param was set in src/Load_mesh/Graph_loader.py --> datapreprocessing()
+            graph_cell.x[:,self.node_phi_size:] = self.node_norm(graph_cell.x[:,self.node_phi_size:])
+            graph_cell.norm_global=False
         
-        return graph_node
+        return graph_cell
 
     def update_edge_attr(
         self,
@@ -138,17 +119,17 @@ class NNmodel(nn.Module):
 
         return graph
 
-    def _enforce_boundary_condition(self, uvp, graph_node):
+    def _enforce_boundary_condition(self, uvp, graph_cell):
 
         mask_dirichlet  = (
-            (graph_node.node_type == NodeType.WALL_BOUNDARY) | 
-            (graph_node.node_type == NodeType.INFLOW)|
-            (graph_node.node_type == NodeType.PRESS_POINT)|
-            (graph_node.node_type == NodeType.IN_WALL)).squeeze()
+            (graph_cell.cell_type == NodeType.WALL_BOUNDARY) | 
+            (graph_cell.cell_type == NodeType.INFLOW)|
+            (graph_cell.cell_type == NodeType.PRESS_POINT)|
+            (graph_cell.cell_type == NodeType.IN_WALL)).squeeze()
 
-        mask_press_constraint = (graph_node.node_type == NodeType.PRESS_POINT).squeeze()
+        mask_press_constraint = (graph_cell.cell_type == NodeType.PRESS_POINT).squeeze()
         
-        uvp[mask_dirichlet,0:2] = graph_node.y[mask_dirichlet,0:2]
+        uvp[mask_dirichlet,0:2] = graph_cell.y[mask_dirichlet,0:2]
         uvp[mask_press_constraint,2:3] = 0
         
         return uvp
@@ -156,7 +137,7 @@ class NNmodel(nn.Module):
     def forward(
         self,
         graph_node,
-        graph_node_x,
+        graph_cell_x,
         graph_edge,
         graph_cell,
         graph_Index,
@@ -165,39 +146,34 @@ class NNmodel(nn.Module):
 
         if is_training:
             # 取出上一时刻uv来作时间差分
-            uv_old_node = (
-                graph_node.x[:, 0:2] / graph_Index.uvp_dim[graph_node.batch, 0:2]
+            uv_old_cell = (
+                graph_cell.x[:, 0:2] / graph_Index.uvp_dim[graph_cell.batch, 0:2]
             )
 
             # update normalized value
-            graph_node = self.update_x_attr(
-                graph_node=graph_node,
+            graph_cell = self.update_x_attr(
+                graph_cell=graph_cell,
                 graph_Index=graph_Index,
             )
 
-            graph_node = self.update_edge_attr(
-                graph=graph_node,
+            graph_cell = self.update_edge_attr(
+                graph=graph_cell,
             )  # 因为每次都会重复计算relative edge attr, 所以每次都必定norm edge attr
 
-            uvp_new_node = self.simulator(graph_node, graph_edge, graph_cell)
-            
-            # # 临时处理以下，将带有periodic的edge_index替换回原来的只有内部域的edge_index， 具体请查看src/Load_mesh/Graph_loader.py
-            # graph_node.edge_index = graph_node.edge_index_interior
-            
-            uvp_new_node = torch.tanh(uvp_new_node/10)*10
-            
-            uvp_new_node = self._enforce_boundary_condition(uvp_new_node, graph_node)
+            uvp_new_cell = self.simulator(graph_node, graph_edge, graph_cell)
+
+            uvp_new_cell = self._enforce_boundary_condition(uvp_new_cell, graph_cell)
             
             # explicit / implicit / IMEX integration schemes
             if self.params.integrator == "explicit":
-                uv_hat_node = uv_old_node[:, 0:2]
+                uv_hat_cell = uv_old_cell[:, 0:2]
 
             if self.params.integrator == "implicit":
-                uv_hat_node = uvp_new_node[:, 0:2]
+                uv_hat_cell = uvp_new_cell[:, 0:2]
 
             if self.params.integrator == "imex":
-                uv_hat_node = (
-                    uv_old_node[:, 0:2] + uvp_new_node[:, 0:2]
+                uv_hat_cell = (
+                    uv_old_cell[:, 0:2] + uvp_new_cell[:, 0:2]
                 ) / 2.0
 
             # Intergrate all flux at every edge`s of all cells
@@ -209,21 +185,17 @@ class NNmodel(nn.Module):
                 smoothed_uvp_new_node,
                 uvp_new_cell,
             ) = self.integrator(
-                uvp_new_node=uvp_new_node,
-                uv_hat_node=uv_hat_node,
-                uv_old_node=uv_old_node,
+                uvp_new_cell=uvp_new_cell,
+                uv_hat_cell=uv_hat_cell,
+                uv_old_cell=uv_old_cell,
                 graph_node=graph_node,
-                graph_node_x=graph_node_x,
+                graph_cell_x=graph_cell_x,
                 graph_edge=graph_edge,
                 graph_cell=graph_cell,
                 graph_Index=graph_Index,
                 params=self.params,
             )
-            
-            smoothed_uvp_new_node = self._enforce_boundary_condition(
-                smoothed_uvp_new_node, graph_node
-            )
-            
+
             # reverse dimless for storing
             uvp_node_new_with_dim = smoothed_uvp_new_node*graph_Index.uvp_dim[graph_node.batch]*\
                 graph_Index.sigma[graph_node.batch]
@@ -240,21 +212,21 @@ class NNmodel(nn.Module):
             )
         else:
             
-            graph_node = self.update_x_attr(
-                graph=graph_node,
+            graph_cell = self.update_x_attr(
+                graph=graph_cell,
             )
 
-            graph_node = self.update_edge_attr(
-                graph=graph_node,
+            graph_cell = self.update_edge_attr(
+                graph=graph_cell,
             )
 
-            uvp_new_node = self.simulator(graph_node,graph_cell)
+            uvp_new_cell = self.simulator(graph_cell,graph_cell)
             
-            uvp_new_node = self._enforce_boundary_condition(uvp_new_node, graph_node)*\
-                graph_Index.uvp_dim[graph_node.batch]*\
-                graph_Index.sigma[graph_node.batch]
+            uvp_new_cell = self._enforce_boundary_condition(uvp_new_cell, graph_cell)*\
+                graph_Index.uvp_dim[graph_cell.batch]*\
+                graph_Index.sigma[graph_cell.batch]
             
-            return uvp_new_node
+            return uvp_new_cell
 
     def load_checkpoint(self, optimizer=None, scheduler=None, ckpdir=None, device=None):
         if ckpdir is None:

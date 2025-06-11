@@ -120,7 +120,7 @@ class Encoder(nn.Module):
 
         # # message passing from cell to node
         # node_attr = scatter_add(
-        #     src=cell_[graph_cell.face], index=graph_node.face, dim=0
+        #     src=cell_[graph_cell.cells_index], index=graph_node.face, dim=0
         # )
         
         # # 以下这个过程类似FVGN，将cell的face上特征看作node与node边上的特征

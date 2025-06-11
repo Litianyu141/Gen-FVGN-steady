@@ -7,6 +7,9 @@ sys.path.append(cur_path)
 import torch
 import numpy as np
 
+# 设置torch.compile配置以避免警告
+torch._dynamo.config.capture_scalar_outputs = True
+
 # import os
 from Load_mesh import Graph_loader
 from Utils import get_param
@@ -19,7 +22,7 @@ from torch_geometric.data.batch import Batch
 from Utils.utilities import Scalar_Eular_solution
 import random
 import datetime
-from FVMmodel.FVdiscretization.FVgrad import node_based_WLSQ,compute_normal_matrix,Moving_LSQ,node_based_WLSQ_2nd_order
+from FVMmodel.FVdiscretization.FVgrad import weighted_lstsq,compute_normal_matrix,Moving_LSQ,weighted_lstsq_2nd_order
 from Extract_mesh.parse_to_h5 import seperate_domain,build_k_hop_edge_index
 import pyvista as pv
 from Utils.utilities import NodeType
@@ -39,9 +42,8 @@ params.dataset_size=1
 params.batch_size=1
 params.order = "2nd" # 1st, 2nd, 3rd, 4th
 
-# 编译 node_based_WLSQ 函数 - 只编译主要测试函数
-compiled_node_based_WLSQ = torch.compile(node_based_WLSQ)
-# 不编译 compute_normal_matrix，因为它包含可能导致图断裂的操作
+# 编译 weighted_lstsq 函数 - 只编译主要测试函数
+compiled_weighted_lstsq = torch.compile(weighted_lstsq)
 
 # initialize Logger and load model / optimizer if according parameters were given
 logger = Logger(
@@ -76,7 +78,7 @@ print("Training traj has been loaded time consuming:{0}".format(end - start))
 ''' >>> fetch data and move to GPU >>> '''
 for batch_index, (
     graph_node,
-    graph_node_x,
+    graph_cell_x,
     graph_edge,
     graph_cell,
     graph_Index,
@@ -88,13 +90,13 @@ for batch_index, (
     
     (
         graph_node,
-        graph_node_x,
+        graph_cell_x,
         graph_edge,
         graph_cell,
         graph_Index,
     ) = datasets.datapreprocessing(
         graph_node=graph_node.to(device),
-        graph_node_x=graph_node_x.to(device),
+        graph_cell_x=graph_cell_x.to(device),
         graph_edge=graph_edge.to(device),
         graph_cell=graph_cell.to(device),
         graph_Index=graph_Index.to(device),
@@ -117,22 +119,20 @@ for batch_index, (
 
     with torch.no_grad():
         ''' >>> 预计算moments >>> '''
-        (A_node_to_node, two_way_B_node_to_node, extra_B_node_to_node) = compute_normal_matrix(
+        (A_cell_to_cell, two_way_B_cell_to_cell) = compute_normal_matrix(
             order=params.order,
             mesh_pos=graph_node.pos,
-            edge_index=graph_node_x.face_node_x,
-            extra_edge_index=graph_node_x.support_edge
+            edge_index=graph_cell_x.neighbor_cell_x,
         )
-        single_way_B = torch.chunk(two_way_B_node_to_node, 2, dim=0)[0]
+        single_way_B = torch.chunk(two_way_B_cell_to_cell, 2, dim=0)[0]
         
         # 先运行一次编译版本进行预热，并检查输出
-        grad_phi_warmup = compiled_node_based_WLSQ(
+        grad_phi_warmup = compiled_weighted_lstsq(
             phi_node=phi_node_GT,
-            edge_index=graph_node_x.face_node_x,
-            extra_edge_index=graph_node_x.support_edge,
+            edge_index=graph_cell_x.neighbor_cell_x,
             mesh_pos=graph_node.pos,
             order=params.order,
-            precompute_Moments=[A_node_to_node, single_way_B, extra_B_node_to_node],
+            precompute_Moments=[A_cell_to_cell, single_way_B],
             rt_cond=False,
         )
         print(f"Warmup gradient shape: {grad_phi_warmup.shape}")
@@ -144,13 +144,12 @@ for batch_index, (
         num_runs = 50000
         for _ in range(num_runs):
             start_time = time.time()
-            grad_phi = compiled_node_based_WLSQ(
+            grad_phi = compiled_weighted_lstsq(
                 phi_node=phi_node_GT,
-                edge_index=graph_node_x.face_node_x,
-                extra_edge_index=graph_node_x.support_edge,
+                edge_index=graph_cell_x.neighbor_cell_x,
                 mesh_pos=graph_node.pos,
                 order=params.order,
-                precompute_Moments=[A_node_to_node, single_way_B, extra_B_node_to_node],
+                precompute_Moments=[A_cell_to_cell, single_way_B],
                 rt_cond=False,
             )  
             total_time += time.time() - start_time

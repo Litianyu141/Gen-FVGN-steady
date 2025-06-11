@@ -15,9 +15,11 @@ from Extract_mesh.parse_to_h5 import (
 )
 from Extract_mesh.parse_base import Basemanager
 import os
-import matplotlib
 
-matplotlib.use("Agg")
+# 添加matplotlib和networkx用于图形可视化
+import matplotlib
+matplotlib.use("agg", force=True)
+
 from matplotlib import tri as mtri
 import matplotlib.pyplot as plt
 from matplotlib import animation
@@ -512,7 +514,7 @@ class Cosmol_manager(Basemanager):
             "cells_face": torch.from_numpy(cells_face).long(),
         }
 
-        # There`s face_center_pos, centroid, face_type, neighbour_cell, face_node_x need to be resolved
+        # There`s face_center_pos, centroid, face_type, neighbor_cell, neighbor_cell_x need to be resolved
         h5_dataset = extract_mesh_state(
             mesh,
             path=self.path,
@@ -589,7 +591,7 @@ if __name__ == "__main__":
     # for debugging
 
     debug_file_path = None
-    # debug_file_path = "datasets/airfoil_L=1/farfield_RAE2822_with_quad_bc_L=1/mesh.mphtxt"
+    # debug_file_path = "datasets/trainset/cylinder_flow_tri_quad/mesh.mphtxt"
     # if not debug_file_path.endswith(".mphtxt"):
     #     raise ValueError(
     #         "Debug file path must be a specific .mphtxt file"
@@ -597,7 +599,7 @@ if __name__ == "__main__":
         
     path = {
         "simulator": "COMSOL",
-        "comsol_dataset_path": "mesh_example",
+        "comsol_dataset_path": "datasets/cylinder_flow_full_tri",
         "mesh_only": True,
     }
 

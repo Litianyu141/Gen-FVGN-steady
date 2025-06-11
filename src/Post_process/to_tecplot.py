@@ -6,7 +6,7 @@ import numpy as np
 import pickle
 import matplotlib.pyplot as plt
 
-# matplotlib.use('Agg')
+# matplotlib.use("agg")
 import pandas as pd
 import circle_fit as cf
 from circle_fit import hyper_fit
@@ -279,7 +279,7 @@ def write_interior_zone(
     cells_node = zone["cells_node"][0]
     cells_index = zone["cells_index"][0]
     face_node = zone["face_node"][0]
-    neighbour_cell = zone["neighbour_cell"][0]
+    neighbor_cell = zone["neighbor_cell"][0]
     counts = count_cells_num_node(cells_index)
     write_face = False
     
@@ -342,17 +342,17 @@ def write_interior_zone(
     else:
         if face_node.min() == 0:
             write_face_node = face_node+1
-        if neighbour_cell.min() == 0:
-            write_neighbour_cell = neighbour_cell+1
+        if neighbor_cell.min() == 0:
+            write_neighbor_cell = neighbor_cell+1
 
-        mask_self_loop = (write_neighbour_cell[:, 0:1] == write_neighbour_cell[:, 1:2]).reshape(-1)
-        write_neighbour_cell[mask_self_loop, 0:1] = 0
+        mask_self_loop = (write_neighbor_cell[:, 0:1] == write_neighbor_cell[:, 1:2]).reshape(-1)
+        write_neighbor_cell[mask_self_loop, 0:1] = 0
         file_handle.write("\n# face nodes\n")
         write_poly_face_index(write_face_node, file_handle)
         file_handle.write("\n# left elements\n")
-        write_poly_face_index(write_neighbour_cell[:, 0:1], file_handle)
+        write_poly_face_index(write_neighbor_cell[:, 0:1], file_handle)
         file_handle.write("\n# right elements\n")
-        write_poly_face_index(write_neighbour_cell[:, 1:2], file_handle)
+        write_poly_face_index(write_neighbor_cell[:, 1:2], file_handle)
 
 
 def write_boundary_zone(file_handle=None, zone=None, t=None):

@@ -17,7 +17,7 @@ from Extract_mesh.parse_base import Basemanager
 import os
 import matplotlib
 
-matplotlib.use("Agg")
+matplotlib.use("agg")
 import matplotlib.pyplot as plt
 import h5py
 import math
@@ -165,24 +165,24 @@ class TecplotMesh(Basemanager):
         # tecplot user manul said boundary face`s outside is 0
         self.left_elements = np.array(self.left_elements)
         self.right_elements = np.array(self.right_elements)
-        self.neighbour_cell = (
+        self.neighbor_cell = (
             np.stack((self.left_elements, self.right_elements), axis=1) - 1
         )  # outside become -1
 
         face_index = torch.from_numpy(
             np.arange(self.mesh_info["face_node"].shape[0])
         ).repeat(2)
-        two_way_neighbour_cell = torch.from_numpy(
+        two_way_neighbor_cell = torch.from_numpy(
             np.concatenate(
-                (self.neighbour_cell[:, 0], self.neighbour_cell[:, 1]), axis=0
+                (self.neighbor_cell[:, 0], self.neighbor_cell[:, 1]), axis=0
             )
         )
 
         self.mesh_info["cells_node"] = []
         self.mesh_info["cells_face"] = []
         self.mesh_info["cells_index"] = []
-        for cells_index in range(two_way_neighbour_cell.max() + 1):
-            current_mask_cells_face = two_way_neighbour_cell == cells_index
+        for cells_index in range(two_way_neighbor_cell.max() + 1):
+            current_mask_cells_face = two_way_neighbor_cell == cells_index
             current_cells_index = torch.full_like(
                 face_index[current_mask_cells_face], cells_index
             )
@@ -223,28 +223,28 @@ class TecplotMesh(Basemanager):
             reduce="min",
         )
 
-        valid_neighbour_cell = torch.stack((left_cell, right_cell), dim=1)
+        valid_neighbor_cell = torch.stack((left_cell, right_cell), dim=1)
 
-        # self.plot_state(centroid,valid_neighbour_cell,centroid=centroid)
+        # self.plot_state(centroid,valid_neighbor_cell,centroid=centroid)
 
         # form self loop at boundary face
         mask_left = self.left_elements == 0
         mask_right = self.right_elements == 0
         self.left_elements[mask_left] = self.right_elements[mask_left]
         self.right_elements[mask_right] = self.left_elements[mask_right]
-        self.neighbour_cell = (
+        self.neighbor_cell = (
             np.stack((self.left_elements, self.right_elements), axis=1) - 1
         )
 
-        neighbour_cell, _ = torch.sort(torch.from_numpy(self.neighbour_cell), dim=1)
-        valid_neighbour_cell, _ = torch.sort(valid_neighbour_cell, dim=1)
+        neighbor_cell, _ = torch.sort(torch.from_numpy(self.neighbor_cell), dim=1)
+        valid_neighbor_cell, _ = torch.sort(valid_neighbor_cell, dim=1)
 
-        valid_mask = valid_neighbour_cell == neighbour_cell
+        valid_mask = valid_neighbor_cell == neighbor_cell
 
         if valid_mask.all():
-            print("good neighbour cell")
+            print("good neighbor cell")
         else:
-            raise ValueError("bad neighbour cell")
+            raise ValueError("bad neighbor cell")
 
         return file_handle, current_line
 
@@ -479,16 +479,16 @@ class TecplotMesh(Basemanager):
                     # tecplot user manul said boundary face`s outside is 0
                     self.left_elements = np.array(self.left_elements)
                     self.right_elements = np.array(self.right_elements)
-                    self.neighbour_cell = (
+                    self.neighbor_cell = (
                         np.stack((self.left_elements, self.right_elements), axis=1) - 1
                     )  # outside become -1
 
                     face_index = torch.from_numpy(
                         np.arange(self.face_node.shape[0])
                     ).repeat(2)
-                    two_way_neighbour_cell = torch.from_numpy(
+                    two_way_neighbor_cell = torch.from_numpy(
                         np.concatenate(
-                            (self.neighbour_cell[:, 0], self.neighbour_cell[:, 1]),
+                            (self.neighbor_cell[:, 0], self.neighbor_cell[:, 1]),
                             axis=0,
                         )
                     )
@@ -496,8 +496,8 @@ class TecplotMesh(Basemanager):
                     self.cells_node = []
                     self.cells_face = []
                     self.cells_index = []
-                    for cells_index in range(two_way_neighbour_cell.max() + 1):
-                        current_mask_cells_face = two_way_neighbour_cell == cells_index
+                    for cells_index in range(two_way_neighbor_cell.max() + 1):
+                        current_mask_cells_face = two_way_neighbor_cell == cells_index
                         current_cells_index = torch.full_like(
                             face_index[current_mask_cells_face], cells_index
                         )
@@ -532,33 +532,33 @@ class TecplotMesh(Basemanager):
                         self.cells_index, self.cells_face, dim=0, reduce="min"
                     )
 
-                    valid_neighbour_cell = torch.stack((left_cell, right_cell), dim=1)
+                    valid_neighbor_cell = torch.stack((left_cell, right_cell), dim=1)
 
-                    # self.plot_state(centroid,valid_neighbour_cell,centroid=centroid)
+                    # self.plot_state(centroid,valid_neighbor_cell,centroid=centroid)
 
                     # form self loop at boundary face
                     mask_left = self.left_elements == 0
                     mask_right = self.right_elements == 0
                     self.left_elements[mask_left] = self.right_elements[mask_left]
                     self.right_elements[mask_right] = self.left_elements[mask_right]
-                    self.neighbour_cell = (
+                    self.neighbor_cell = (
                         np.stack((self.left_elements, self.right_elements), axis=1) - 1
                     )
 
-                    neighbour_cell, _ = torch.sort(
-                        torch.from_numpy(self.neighbour_cell), dim=1
+                    neighbor_cell, _ = torch.sort(
+                        torch.from_numpy(self.neighbor_cell), dim=1
                     )
-                    valid_neighbour_cell, _ = torch.sort(valid_neighbour_cell, dim=1)
+                    valid_neighbor_cell, _ = torch.sort(valid_neighbor_cell, dim=1)
 
-                    valid_mask = valid_neighbour_cell == neighbour_cell
+                    valid_mask = valid_neighbor_cell == neighbor_cell
 
                     if valid_mask.all():
-                        print("good neighbour cell")
+                        print("good neighbor cell")
                         break
                     else:
-                        raise ValueError("bad neighbour cell")
+                        raise ValueError("bad neighbor cell")
 
-                    # self.plot_state(centroid,neighbour_cell,centroid=centroid)
+                    # self.plot_state(centroid,neighbor_cell,centroid=centroid)
 
         self.mesh_pos = self.mesh_info["mesh_pos"]
 
@@ -661,7 +661,7 @@ class TecplotMesh(Basemanager):
             "cells_face": self.mesh_info["cells_face"].long().squeeze(),
         }
 
-        # There`s face_center_pos, centroid, face_type, neighbour_cell, face_node_x need to be resolved
+        # There`s face_center_pos, centroid, face_type, neighbor_cell, neighbor_cell_x need to be resolved
         h5_dataset = extract_mesh_state(
             mesh,
             path=self.path,
@@ -738,13 +738,13 @@ if __name__ == "__main__":
     # for debugging
 
     debug_file_path = None
-    # debug_file_path = "datasets/cylinder_flow_poly_new_wall_Re=10-30/mesh.dat"
+    # debug_file_path = "datasets/cell-centerd/cylinder_flow_poly_new_wall_Re=10-30/mesh copy.dat"
 
     case = 0  # 0 stands for 980/PM9A1
     if case == 0:
         path = {
             "simulator": "StarCCM+",
-            "tecplot_dataset_path": "datasets/cylinder_flow_poly_new_wall_Re=10-30",
+            "tecplot_dataset_path": "datasets/balanced_datasets/cylinder_poly_quad",
             "mesh_only": True,
         }
 

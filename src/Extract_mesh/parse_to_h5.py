@@ -16,6 +16,12 @@ from torch_scatter import scatter
 from Utils.utilities import NodeType
 from Post_process.to_vtk import write_point_cloud_to_vtk
 from torch_geometric import utils as pyg_utils
+import networkx as nx
+
+# 添加matplotlib和networkx用于图形可视化
+import matplotlib
+matplotlib.use("agg")
+import matplotlib.pyplot as plt
 
 def find_pos(mesh_point, mesh_pos_sp1):
     for k in range(mesh_pos_sp1.shape[0]):
@@ -259,7 +265,7 @@ def extract_mesh_state(
     path=None,
 ):
     """
-    face_center_pos, centroid, face_type, neighbour_cell, face_node_x
+    face_center_pos, centroid, face_type, neighbor_cell, face_node_x
     """
     dataset = convert_to_tensors(dataset)
 
@@ -398,9 +404,150 @@ def extract_mesh_state(
         reduce = "min"
     ).squeeze(1)
     
-    neighbour_cell = torch.stack((recivers_cell, senders_cell), dim=0)
-    dataset["face|neighbour_cell"] = neighbour_cell.to(torch.int64)
+    neighbor_cell = torch.stack((recivers_cell, senders_cell), dim=0)
+    dataset["face|neighbor_cell"] = neighbor_cell.to(torch.int64)
     """ <<< compute neighbor_cell <<< """
+
+    """ >>> compute compond neighbor_cell >>> """
+    face_type = face_type.long().squeeze()
+    neighbor_cell = neighbor_cell.long().squeeze()
+    face_center_pos = face_center_pos.to(torch.float32)
+    centroid = centroid.to(torch.float32)
+    
+    BC_face_mask =  ~(face_type==NodeType.NORMAL).squeeze()
+    BC_face_center_pos = face_center_pos[BC_face_mask]
+    BC_face_center_pos_ptr = torch.arange(BC_face_center_pos.shape[0])+centroid.shape[0]
+    
+    cell_type = torch.cat((
+        torch.full((centroid.shape[0],),NodeType.NORMAL,dtype=torch.long),
+        face_type[BC_face_mask]
+    ),dim=0)
+    dataset["cpd|cell_type"] = cell_type 
+    
+    if (neighbor_cell[0,BC_face_mask]!=neighbor_cell[1,BC_face_mask]).all():
+        raise ValueError("please check neighbor cell configuration")
+    else:
+        cpd_neighbor_cell = neighbor_cell.clone()
+        cpd_neighbor_cell[1,BC_face_mask] = BC_face_center_pos_ptr
+        cpd_centroid = torch.cat((centroid,BC_face_center_pos),dim=0)
+
+        dataset["cpd|neighbor_cell"] = cpd_neighbor_cell
+        dataset["cpd|centroid"] = cpd_centroid
+
+        # 可视化已移动到parse_to_h5.py中执行，不再在这里调用
+    """ <<< compute compond neighbor_cell <<< """
+    
+    """ >>> 图形可视化 >>> """
+    def visualize_graph_structure(mesh_pos, face_node, centroid, cpd_centroid_pos, neighbor_cell, save_path="graph_visualization.png"):
+        """
+        使用NetworkX可视化图数据结构，包括基于顶点的图和基于单元中心的图
+        
+        Args:
+            mesh_pos: 顶点坐标，shape为[N_nodes, 2]
+            face_node: 顶点之间的edge_index，shape为[2, E_nodes]
+            centroid: 原始centroid节点坐标，用于区分节点类型
+            cpd_centroid_pos: 节点质心坐标，shape为[N_cells, 2]
+            neighbor_cell: 单元邻接关系，shape为[2, E_cells]
+            save_path: 保存图片的路径
+        """
+        try:
+            # 创建包含两个子图的figure
+            fig, ax1 = plt.subplots(1, figsize=(16, 9))
+            
+            # ========== 绘制基于顶点的图 ==========
+            # 转换为numpy数组
+            mesh_pos_np = mesh_pos.detach().cpu().numpy()
+            face_node_np = face_node.detach().cpu().numpy()
+            
+            # 创建基于顶点的NetworkX图
+            G_nodes = nx.Graph()
+            
+            # 添加顶点节点
+            num_mesh_nodes = mesh_pos_np.shape[0]
+            G_nodes.add_nodes_from(range(num_mesh_nodes))
+            
+            # 添加顶点之间的边
+            node_edges = [(face_node_np[0, i], face_node_np[1, i]) for i in range(face_node_np.shape[1])]
+            G_nodes.add_edges_from(node_edges)
+            
+            # 设置顶点位置字典
+            pos_dict_nodes = {i: (mesh_pos_np[i, 0], mesh_pos_np[i, 1]) for i in range(num_mesh_nodes)}
+            
+            # 在第一个子图中绘制顶点图
+            nx.draw_networkx_edges(G_nodes, pos_dict_nodes, alpha=0.3, width=0.3, edge_color='blue', ax=ax1)
+            nx.draw_networkx_nodes(G_nodes, pos_dict_nodes, node_color='lightgreen', 
+                                  node_size=15, alpha=0.7, ax=ax1)
+            
+            ax1.set_title(f"Mesh Vertices Graph\nNodes: {num_mesh_nodes}, Edges: {face_node_np.shape[1]}")
+            ax1.set_aspect('equal')
+            # ax1.grid(True, alpha=0.3)
+            
+            # ========== 绘制基于单元中心的图 ==========
+            # 转换为numpy数组
+            cpd_pos_np = cpd_centroid_pos.detach().cpu().numpy()
+            neighbor_cell_np = neighbor_cell.detach().cpu().numpy()
+            
+            # 创建基于单元中心的NetworkX图
+            G_cells = nx.Graph()
+            
+            # 添加单元中心节点
+            num_cell_nodes = cpd_pos_np.shape[0]
+            G_cells.add_nodes_from(range(num_cell_nodes))
+            
+            # 添加单元之间的边
+            cell_edges = [(neighbor_cell_np[0, i], neighbor_cell_np[1, i]) for i in range(neighbor_cell_np.shape[1])]
+            G_cells.add_edges_from(cell_edges)
+            
+            # 设置单元中心位置字典
+            pos_dict_cells = {i: (cpd_pos_np[i, 0], cpd_pos_np[i, 1]) for i in range(num_cell_nodes)}
+            
+            # 在第二个子图中绘制单元中心图
+            nx.draw_networkx_edges(G_cells, pos_dict_cells, alpha=0.5, width=0.5, edge_color='gray', ax=ax1)
+            
+            # 区分原始centroid节点和BC face center节点
+            original_nodes = list(range(centroid.shape[0]))
+            bc_nodes = list(range(centroid.shape[0], num_cell_nodes))
+            
+            if original_nodes:
+                nx.draw_networkx_nodes(G_cells, pos_dict_cells, nodelist=original_nodes, 
+                                        node_color='lightblue', node_size=30, alpha=0.8, 
+                                        label='Cell Centers', ax=ax1)
+            if bc_nodes:
+                nx.draw_networkx_nodes(G_cells, pos_dict_cells, nodelist=bc_nodes, 
+                                        node_color='red', node_size=30, alpha=0.8, 
+                                        label='BC Face Centers', ax=ax1)
+
+            # 调整子图间距
+            plt.tight_layout()
+            
+            plt.show(block=True)
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            print(f"Graph visualization saved to: {save_path}")
+
+            plt.close()  # 关闭figure释放内存
+            
+            print(f"Graph statistics:")
+            print(f"  - Mesh vertices: {num_mesh_nodes} nodes, {face_node_np.shape[1]} edges")
+            print(f"  - Cell centers: {num_cell_nodes} nodes, {neighbor_cell_np.shape[1]} edges")
+            
+        except Exception as e:
+            print(f"Error in visualize_graph_structure: {e}")
+            print("Skipping visualization, continuing with mesh processing...")
+    
+    # 执行可视化
+    # case_name = path.get('case_name', 'unknown')
+    # os.makedirs(f"{path['file_dir']}/Graph_visualization", exist_ok=True)
+    # save_path = f"{path['file_dir']}/Graph_visualization/cell_graph_{case_name}.png"
+    # visualize_graph_structure(
+    #     mesh_pos=mesh_pos,
+    #     face_node=face_node,
+    #     centroid=centroid, 
+    #     cpd_centroid_pos=cpd_centroid, 
+    #     neighbor_cell=cpd_neighbor_cell[:,~(cpd_neighbor_cell[0]==cpd_neighbor_cell[1])], 
+    #     # neighbor_cell=neighbor_cell,
+    #     save_path=save_path
+    # )
+    """ <<< 图形可视化 <<< """
 
     """ >>> unit normal vector >>> """
     face_area = face_area
@@ -451,7 +598,7 @@ def extract_mesh_state(
         index=cells_index,
         reduce="sum",
         dim=0,
-    ).squeeze(1)
+    ).squeeze().unsqueeze(1)
     # use shoelace formula to validate
 
     test_cells_area = []
@@ -472,23 +619,23 @@ def extract_mesh_state(
         dataset["cell|cells_area"] = cells_area
 
     ''' >>> compute face_node_x <<< '''
-    domain_list = seperate_domain(
-        cells_node=cells_node, 
-        cells_face=cells_face, 
-        cells_index=cells_index
-    )
+    # domain_list = seperate_domain(
+    #     cells_node=cells_node, 
+    #     cells_face=cells_face, 
+    #     cells_index=cells_index
+    # )
     
-    face_node_x=[]
-    for domain in domain_list:
+    # face_node_x=[]
+    # for domain in domain_list:
         
-        _ct, _cells_node, _cells_face, _cells_index, _ = domain
+    #     _ct, _cells_node, _cells_face, _cells_index, _ = domain
         
-        face_node_x.append(
-            compose_support_face_node_x(cells_type=_ct, cells_node=_cells_node)
-        )
-    face_node_x = torch.cat(face_node_x, dim=1)
-    face_node_x = torch.unique(face_node_x[:,~(face_node_x[0]==face_node_x[1])],dim=1)
-    dataset["face_node_x"] = face_node_x
+    #     face_node_x.append(
+    #         compose_support_face_node_x(cells_type=_ct, cells_node=_cells_node)
+    #     )
+    # face_node_x = torch.cat(face_node_x, dim=1)
+    # face_node_x = torch.unique(face_node_x[:,~(face_node_x[0]==face_node_x[1])],dim=1)
+    # dataset["face_node_x"] = face_node_x
     ''' >>> compute face_node_x <<< '''
     
     print(f"{path['case_name']}mesh has been extracted")

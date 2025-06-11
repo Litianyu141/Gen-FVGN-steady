@@ -15,7 +15,6 @@ from Utils.utilities import (
 from torch_geometric.data import Data
 import numpy as np
 from torch_scatter import scatter_add, scatter_mean
-import matplotlib.pyplot as plt
 from FVMmodel.FVdiscretization.FVInterpolation import Interplot
 
 class FV_flux(Interplot):

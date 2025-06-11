@@ -1,6 +1,3 @@
-import faulthandler
-faulthandler.enable()
-
 import sys
 import os
 
@@ -128,28 +125,28 @@ for epoch in range(params.n_epochs):
             
         for batch_index, (
             graph_node,
-            graph_node_x,
+            graph_cell_x,
             graph_edge,
             graph_cell,
             graph_Index,
         ) in enumerate(loader):
 
-            global_idx = graph_node.global_idx # backup cpu tensor
+            global_idx = graph_cell.global_idx # backup cpu tensor
             
             ''' >>> please check src/Load_mesh/Graph_loader.py/->update_x_attr >>> '''
-            graph_node.norm_uvp=params.norm_uvp
-            graph_node.norm_global=params.norm_global
+            graph_cell.norm_uvp=params.norm_uvp
+            graph_cell.norm_global=params.norm_global
             ''' <<< please check src/Load_mesh/Graph_loader.py/->update_x_attr <<< '''
             
             (
                 graph_node,
-                graph_node_x,
+                graph_cell_x,
                 graph_edge,
                 graph_cell,
                 graph_Index,
             ) = datasets.datapreprocessing(
                 graph_node=graph_node.cuda(),
-                graph_node_x=graph_node_x.cuda(),
+                graph_cell_x=graph_cell_x.cuda(),
                 graph_edge=graph_edge.cuda(),
                 graph_cell=graph_cell.cuda(),
                 graph_Index=graph_Index.cuda(),
@@ -163,10 +160,10 @@ for epoch in range(params.n_epochs):
                 loss_mom_y,
                 loss_press,
                 uvp_node_new,
-                _,
+                uvp_cell_new,
             ) = fluid_model(
                 graph_node=graph_node,
-                graph_node_x=graph_node_x,
+                graph_cell_x=graph_cell_x,
                 graph_edge=graph_edge,
                 graph_cell=graph_cell,
                 graph_Index=graph_Index,
@@ -193,7 +190,7 @@ for epoch in range(params.n_epochs):
             if payback:
                 # put back to dataset pool
                 datasets.payback(
-                    uvp_new=uvp_node_new.detach().cpu(),
+                    uvp_new=uvp_cell_new.detach().cpu(),
                     global_idx=global_idx,
                 )
 

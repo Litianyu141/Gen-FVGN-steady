@@ -39,18 +39,18 @@ class Trainer():
         self.loader = loader
         self.datasets = datasets
         
-        (graph_node,graph_node_x,graph_edge,graph_cell,graph_Index) = next(iter(loader))
+        (graph_node,graph_cell_x,graph_edge,graph_cell,graph_Index) = next(iter(loader))
         
-        (graph_node,graph_node_x,graph_edge,graph_cell,graph_Index) = datasets.datapreprocessing(
+        (graph_node,graph_cell_x,graph_edge,graph_cell,graph_Index) = datasets.datapreprocessing(
             graph_node=graph_node.to(self.device),
-            graph_node_x=graph_node_x.to(self.device),
+            graph_cell_x=graph_cell_x.to(self.device),
             graph_edge=graph_edge.to(self.device),
             graph_cell=graph_cell.to(self.device),
             graph_Index=graph_Index.to(self.device),
         )
         
         self.graph_node = graph_node
-        self.graph_node_x = graph_node_x
+        self.graph_cell_x = graph_cell_x
         self.graph_edge = graph_edge
         self.graph_cell = graph_cell
         self.graph_Index = graph_Index
@@ -107,7 +107,7 @@ class Trainer():
                     uvp_cell_new,
                 ) = self.model(
                     graph_node=self.graph_node,
-                    graph_node_x=self.graph_node_x,
+                    graph_cell_x=self.graph_cell_x,
                     graph_edge=self.graph_edge,
                     graph_cell=self.graph_cell,
                     graph_Index=self.graph_Index,

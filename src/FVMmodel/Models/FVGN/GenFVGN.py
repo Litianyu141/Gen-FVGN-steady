@@ -226,7 +226,7 @@ class Simulator(nn.Module):
     def forward(
         self,
         graph_cell: Data = None,
-        graph_node_x: Data = None,
+        graph_cell_x: Data = None,
         graph_edge: Data = None,
         graph_node: Data = None,
         graph_Index: Data = None,
@@ -293,7 +293,7 @@ class Simulator(nn.Module):
             uv_node_hat=fluid_uv_node_hat,
             uv_node_old=uv_node_old,
             graph_node=graph_node,
-            graph_node_x=graph_node_x,
+            graph_cell_x=graph_cell_x,
             graph_edge=graph_edge,
             graph_cell=graph_cell,
             graph_Index=graph_Index,

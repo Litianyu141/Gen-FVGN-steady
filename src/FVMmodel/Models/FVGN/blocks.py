@@ -41,7 +41,7 @@ class NodeBlock(nn.Module):
             ),
         )
 
-        node_avg_neighbour_node = scatter_mean(
+        node_avg_neighbor_node = scatter_mean(
             node_agg_received_edges[twoway_node_connections_outdegree],
             twoway_node_connections_indegree,
             dim=0,
@@ -51,7 +51,7 @@ class NodeBlock(nn.Module):
         )
 
         # update node attr
-        x = self.net(torch.cat((node_avg_neighbour_node, node_attr), dim=1))
+        x = self.net(torch.cat((node_avg_neighbor_node, node_attr), dim=1))
 
         return Data(
             x=x,
@@ -89,7 +89,7 @@ class EdgeBlock(nn.Module):
             [receivers_node_idx, senders_node_idx], dim=0
         )
 
-        node_avg_neighbour_node = scatter_add(
+        node_avg_neighbor_node = scatter_add(
             node_attr[twoway_node_connections_outdegree],
             twoway_node_connections_indegree,
             dim=0,
@@ -98,8 +98,8 @@ class EdgeBlock(nn.Module):
             ),
         )
 
-        senders_attr = node_avg_neighbour_node[senders_node_idx]
-        receivers_attr = node_avg_neighbour_node[receivers_node_idx]
+        senders_attr = node_avg_neighbor_node[senders_node_idx]
+        receivers_attr = node_avg_neighbor_node[receivers_node_idx]
 
         edges_to_collect.append(senders_attr)
         edges_to_collect.append(receivers_attr)

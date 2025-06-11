@@ -50,7 +50,7 @@ class Simulator(nn.Module):
             node_output_size=node_output_size,
         )
         
-    @torch.compile
+    # @torch.compile
     def forward(
         self,
         graph_node=None,
@@ -58,17 +58,17 @@ class Simulator(nn.Module):
         graph_cell=None,
     ):
 
-        latent_graph_node, node_embedding = self.encoder(graph_node)
+        latent_graph_cell, cell_embedding = self.encoder(graph_cell)
 
         for _, model in enumerate(self.GN_block_list):
 
-            latent_graph_node = model(latent_graph_node)
+            latent_graph_cell = model(latent_graph_cell)
             
-        latent_graph_node.x = self.TransBlock(
-            latent_graph_node.x+node_embedding,
-            graph_node.batch,
+        latent_graph_cell.x = self.TransBlock(
+            latent_graph_cell.x+cell_embedding,
+            graph_cell.batch,
         )
         
-        pred_node = self.decoder(latent_graph_node)
+        pred_cell = self.decoder(latent_graph_cell)
 
-        return pred_node
+        return pred_cell

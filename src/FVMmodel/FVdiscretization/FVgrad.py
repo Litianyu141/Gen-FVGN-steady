@@ -196,18 +196,19 @@ def compute_normal_matrix(
         extra_edge_index (Tensor, optional): [2, E_extra] Extra edge indices.
         periodic_idx (Tensor, optional): Periodic boundary indices.
     Returns:
-        Tuple of (A_node_to_node, B_node_to_node[:split_index], B_node_to_node[split_index:]).
+        Tuple of (A_cell_to_cell, B_cell_to_cell[:split_index], B_cell_to_cell[split_index:]).
     """
     
     twoway_edge_index = torch.cat((edge_index,edge_index.flip(0)),dim=1)
 
     if extra_edge_index is not None:
         complete_edge_index = torch.cat((twoway_edge_index,extra_edge_index),dim=1)
+        # split_index = twoway_edge_index.shape[1] # 返回的B中要区分双向的部分和单向的部分
+        
     else:
         complete_edge_index = twoway_edge_index
-        
-    split_index = twoway_edge_index.shape[1] # 返回的B中要区分双向的部分和单向的部分
-    
+        # split_index=None
+
     outdegree_node_index, indegree_node_index = complete_edge_index[0], complete_edge_index[1]   
     
     mesh_pos_diff_on_edge = mesh_pos[outdegree_node_index] - mesh_pos[indegree_node_index]
@@ -216,23 +217,16 @@ def compute_normal_matrix(
     
     # normaled_mesh_pos_diff_on_edge = mesh_pos_diff_on_edge/(L_local[indegree_node_index])
     
-    (A_node_to_node, B_node_to_node) = moments_order(
+    (A_cell_to_cell, B_cell_to_cell) = moments_order(
         order=order,
         mesh_pos_diff_on_edge=mesh_pos_diff_on_edge,
         indegree_node_index=indegree_node_index,
     )
 
-    # # 由于周期边界条件的加入，那么需要将src的A传递给dst的A，B也同理，只不过不在预处理这里传递，在下面求解矩阵的计算中传递
-    # if periodic_idx is not None:
-    #     valid_peridx = periodic_idx[periodic_idx[0]>=0] #  使用-1来屏蔽非周期边界的idx
-    #     periodic_A = A_node_to_node[valid_peridx[0]] + A_node_to_node[valid_peridx[1]]
-    #     A_node_to_node[valid_peridx[0]] = periodic_A
-    #     A_node_to_node[valid_peridx[1]] = periodic_A
-    
-    return (A_node_to_node, B_node_to_node[:split_index], B_node_to_node[split_index:])
+    return (A_cell_to_cell, B_cell_to_cell)
 
 # @torch.compile
-def node_based_WLSQ(
+def weighted_lstsq(
     phi_node=None,
     edge_index=None, # 输入的edge_index是否是双向的,注意对于edge_index一定是0-1
     extra_edge_index=None,
@@ -273,51 +267,51 @@ def node_based_WLSQ(
     if precompute_Moments is None:
 
         """node to node contribution"""
-        (A_node_to_node, two_way_B_node_to_node,single_way_B_node_to_node) = compute_normal_matrix(
+        (A_cell_to_cell, two_way_B_cell_to_cell) = compute_normal_matrix(
             order=order,
             mesh_pos=mesh_pos,
             edge_index=edge_index, # 默认应该是仅包含1阶邻居点+构成共点的单元的所有点
             extra_edge_index=extra_edge_index, # 额外的模板。例如内部点指向边界点
         )
-        B_node_to_node = torch.cat((two_way_B_node_to_node,single_way_B_node_to_node),dim=0)
+        B_cell_to_cell = two_way_B_cell_to_cell
         """node to node contribution"""
         
-        phi_diff_on_edge = B_node_to_node * (
+        phi_diff_on_edge = B_cell_to_cell * (
             (phi_node[outdegree_node_index] - phi_node[indegree_node_index]).unsqueeze(
                 1
             )
         )
 
-        B_phi_node_to_node = scatter_add(
+        B_phi_cell_to_cell = scatter_add(
             phi_diff_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
         )
 
     else:
         """use precomputed moments"""
-        A_node_to_node, Oneway_B_node_to_node, extra_single_way_B_node_to_node = precompute_Moments
+        A_cell_to_cell, Oneway_B_cell_to_cell = precompute_Moments
 
-        half_dim = Oneway_B_node_to_node.shape[0]
+        half_dim = Oneway_B_cell_to_cell.shape[0]
         
-        two_way_B_node_to_node = torch.cat(
-            (Oneway_B_node_to_node, Oneway_B_node_to_node), dim=0
+        two_way_B_cell_to_cell = torch.cat(
+            (Oneway_B_cell_to_cell, Oneway_B_cell_to_cell), dim=0
         )
         
         # 大于1阶的奇数阶项需要取负
-        two_way_B_node_to_node[half_dim:,0:2]*= -1
+        two_way_B_cell_to_cell[half_dim:,0:2]*= -1
         od = int(order[0])
         
         if od >=3 :
-            two_way_B_node_to_node[half_dim:,5:9]*= -1
+            two_way_B_cell_to_cell[half_dim:,5:9]*= -1
         
-        B_node_to_node = torch.cat((two_way_B_node_to_node, extra_single_way_B_node_to_node),dim=0)
+        B_cell_to_cell = two_way_B_cell_to_cell
         
-        phi_diff_on_edge = B_node_to_node * (
+        phi_diff_on_edge = B_cell_to_cell * (
             (phi_node[outdegree_node_index] - phi_node[indegree_node_index]).unsqueeze(
                 1
             )
         )
 
-        B_phi_node_to_node = scatter_add(
+        B_phi_cell_to_cell = scatter_add(
             phi_diff_on_edge,
             indegree_node_index,
             dim=0,
@@ -327,14 +321,14 @@ def node_based_WLSQ(
     # # 处理周期边界条件，假如A矩阵已经处理好了，这里来处理B矩阵
     # if periodic_idx is not None:
     #     valid_peridx = periodic_idx[periodic_idx[0]>=0] #  使用-1来屏蔽非周期边界的idx
-    #     periodic_B = B_phi_node_to_node[valid_peridx[0]] + B_phi_node_to_node[valid_peridx[1]]
-    #     B_phi_node_to_node[valid_peridx[0]] = periodic_B
-    #     B_phi_node_to_node[valid_peridx[1]] = periodic_B
+    #     periodic_B = B_phi_cell_to_cell[valid_peridx[0]] + B_phi_cell_to_cell[valid_peridx[1]]
+    #     B_phi_cell_to_cell[valid_peridx[0]] = periodic_B
+    #     B_phi_cell_to_cell[valid_peridx[1]] = periodic_B
     
     # 行归一化
-    row_norms = torch.norm(A_node_to_node, p=2, dim=2, keepdim=True)
-    A_normalized = A_node_to_node / (row_norms + 1e-8)
-    B_normalized = B_phi_node_to_node / (row_norms + 1e-8)
+    row_norms = torch.norm(A_cell_to_cell, p=2, dim=2, keepdim=True)
+    A_normalized = A_cell_to_cell / (row_norms + 1e-8)
+    B_normalized = B_phi_cell_to_cell / (row_norms + 1e-8)
     
     # lambda_reg = 1e-5  # 正则化参数
     # I = torch.eye(A_normalized.shape[-1], device=A_normalized.device)
@@ -351,7 +345,7 @@ def node_based_WLSQ(
     # ).solution.transpose(1, 2)
 
     """ second method"""
-    # nabla_phi_node_lst = torch.matmul(A_inv_node_to_node_x,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(A_inv_cell_to_cell_x,B_phi_cell_to_cell_x)
 
     """ third method"""
     nabla_phi_node_lst = torch.linalg.solve(
@@ -359,7 +353,7 @@ def node_based_WLSQ(
     ).transpose(1, 2)
 
     """ fourth method"""
-    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_cell_to_cell_x)
 
     if rt_cond:
         return nabla_phi_node_lst,torch.linalg.cond(A_normalized) 
@@ -367,7 +361,7 @@ def node_based_WLSQ(
         return nabla_phi_node_lst
 
 
-def node_based_WLSQ_2nd_order(
+def weighted_lstsq_2nd_order(
     phi_node=None,
     edge_index=None,
     mesh_pos=None,
@@ -406,19 +400,19 @@ def node_based_WLSQ_2nd_order(
 
     r_d = torch.norm(mesh_pos_diff_on_edge, dim=1, keepdim=True) ** 3
 
-    weight_node_to_node = 1 / r_d.unsqueeze(2)
+    weight_cell_to_cell = 1 / r_d.unsqueeze(2)
 
     left_on_edge = torch.matmul(
-        displacement * weight_node_to_node,
+        displacement * weight_cell_to_cell,
         displacement_T,
     )
 
-    A_node_to_node = scatter_add(
+    A_cell_to_cell = scatter_add(
         left_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
 
     phi_diff_on_edge = (
-        weight_node_to_node
+        weight_cell_to_cell
         * (
             (
                 phi_node[outdegree_node_index] - phi_node[indegree_node_index]
@@ -427,31 +421,31 @@ def node_based_WLSQ_2nd_order(
         * displacement
     )
 
-    B_phi_node_to_node = scatter_add(
+    B_phi_cell_to_cell = scatter_add(
         phi_diff_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
 
     """ first method"""
     # nabla_phi_node_lst = torch.linalg.lstsq(
-    #     A_node_to_node_x, B_phi_node_to_node_x
+    #     A_cell_to_cell_x, B_phi_cell_to_cell_x
     # ).solution
 
     """ second method"""
-    # nabla_phi_node_lst = torch.matmul(A_inv_node_to_node_x,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(A_inv_cell_to_cell_x,B_phi_cell_to_cell_x)
 
     """ third method"""
     nabla_phi_node_lst = torch.linalg.solve(
-        A_node_to_node, B_phi_node_to_node
+        A_cell_to_cell, B_phi_cell_to_cell
     ).transpose(1, 2)
     # [N,C,[ux, uy, uxx, uyy, uxy]]
     
     """ fourth method"""
-    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_cell_to_cell_x)
     
     return nabla_phi_node_lst
 
 
-def node_based_WLSQ_3rd_order(
+def weighted_lstsq_3rd_order(
     phi_node=None,
     edge_index=None,
     mesh_pos=None,
@@ -493,22 +487,22 @@ def node_based_WLSQ_3rd_order(
     displacement_T = displacement.transpose(1, 2)
 
     r_d = torch.norm(mesh_pos_diff_on_edge, dim=1, keepdim=True) ** 4
-    # weight_node_to_node = 4 / (torch.pi * (1 - r_d**2)).unsqueeze(2)
-    # weight_node_to_node = torch.sqrt(torch.tensor(4)/torch.pi) * ((1 - r_d**2)**4).unsqueeze(2)
-    weight_node_to_node = 1 / r_d.unsqueeze(2)
+    # weight_cell_to_cell = 4 / (torch.pi * (1 - r_d**2)).unsqueeze(2)
+    # weight_cell_to_cell = torch.sqrt(torch.tensor(4)/torch.pi) * ((1 - r_d**2)**4).unsqueeze(2)
+    weight_cell_to_cell = 1 / r_d.unsqueeze(2)
 
     left_on_edge = torch.matmul(
-        displacement * weight_node_to_node,
+        displacement * weight_cell_to_cell,
         displacement_T,
     )
 
-    A_node_to_node = scatter_add(
+    A_cell_to_cell = scatter_add(
         left_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
     """node to node contribution"""
 
     phi_diff_on_edge = (
-        weight_node_to_node
+        weight_cell_to_cell
         * (
             (phi_node[outdegree_node_index] - phi_node[indegree_node_index]).unsqueeze(
                 1
@@ -517,29 +511,29 @@ def node_based_WLSQ_3rd_order(
         * displacement
     )
 
-    B_phi_node_to_node = scatter_add(
+    B_phi_cell_to_cell = scatter_add(
         phi_diff_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
 
     """ first method"""
-    # nabla_phi_node_lst = torch.linalg.lstsq(A_node_to_node, B_phi_node_to_node).solution
+    # nabla_phi_node_lst = torch.linalg.lstsq(A_cell_to_cell, B_phi_cell_to_cell).solution
 
     """ second method"""
-    # nabla_phi_node_lst = torch.matmul(A_inv_node_to_node_x,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(A_inv_cell_to_cell_x,B_phi_cell_to_cell_x)
 
     """ third method"""
     nabla_phi_node_lst = torch.linalg.solve(
-        A_node_to_node, B_phi_node_to_node
+        A_cell_to_cell, B_phi_cell_to_cell
     ).transpose(1, 2)
     # [N,C,[ux, uy, uxx, uyy, uxy, uxxx, uyyy, uxxy, uxyy]]
     
     """ fourth method"""
-    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_cell_to_cell_x)
 
     return nabla_phi_node_lst
 
 
-def node_based_WLSQ_4th_order(
+def weighted_lstsq_4th_order(
     phi_node=None,
     edge_index=None,
     mesh_pos=None,
@@ -592,21 +586,21 @@ def node_based_WLSQ_4th_order(
     displacement_T = displacement.transpose(1, 2)
 
     r_d = torch.norm(mesh_pos_diff_on_edge, dim=1, keepdim=True) ** 5
-    # weight_node_to_node = torch.sqrt(torch.tensor(4)/torch.pi) * ((1 - r_d**2)**4).unsqueeze(2)
-    weight_node_to_node = 1 / r_d.unsqueeze(2)
+    # weight_cell_to_cell = torch.sqrt(torch.tensor(4)/torch.pi) * ((1 - r_d**2)**4).unsqueeze(2)
+    weight_cell_to_cell = 1 / r_d.unsqueeze(2)
 
     left_on_edge = torch.matmul(
-        displacement * weight_node_to_node,
+        displacement * weight_cell_to_cell,
         displacement_T,
     )
 
-    A_node_to_node = scatter_add(
+    A_cell_to_cell = scatter_add(
         left_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
     """node to node contribution"""
 
     phi_diff_on_edge = (
-        weight_node_to_node
+        weight_cell_to_cell
         * (
             (phi_node[outdegree_node_index] - phi_node[indegree_node_index]).unsqueeze(
                 1
@@ -615,24 +609,24 @@ def node_based_WLSQ_4th_order(
         * displacement
     )
 
-    B_phi_node_to_node = scatter_add(
+    B_phi_cell_to_cell = scatter_add(
         phi_diff_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
 
     """ first method"""
-    # nabla_phi_node_lst = torch.linalg.lstsq(A_node_to_node, B_phi_node_to_node).solution
+    # nabla_phi_node_lst = torch.linalg.lstsq(A_cell_to_cell, B_phi_cell_to_cell).solution
 
     """ second method"""
-    # nabla_phi_node_lst = torch.matmul(A_inv_node_to_node_x,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(A_inv_cell_to_cell_x,B_phi_cell_to_cell_x)
 
     """ third method"""
     nabla_phi_node_lst = torch.linalg.solve(
-        A_node_to_node, B_phi_node_to_node
+        A_cell_to_cell, B_phi_cell_to_cell
     ).transpose(1, 2)
     # [N,C,[ux, uy, uxx, uyy, uxy, uxxx, uyyy, uxxy, uxyy...]]
     
     """ fourth method"""
-    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_cell_to_cell_x)
 
     return nabla_phi_node_lst
     # u_{x}, u_{y}, u_{x x}, u_{y y}, u_{x y}, u_{x x x}, u_{y y y}, u_{x x y}, u_{x y y},
@@ -676,14 +670,14 @@ def Moving_LSQ(
     max_node_radius = scatter_max(
         radius, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )[0]
-    weight_node_to_node = torch.exp(-torch.pow(radius / max_node_radius[outdegree_node_index], 2))
+    weight_cell_to_cell = torch.exp(-torch.pow(radius / max_node_radius[outdegree_node_index], 2))
 
     displacement = torch.cat(
         (
-            weight_node_to_node,
-            mesh_pos_diff_on_edge*weight_node_to_node,
-            0.5 * (mesh_pos_diff_on_edge**2)*weight_node_to_node,
-            mesh_pos_diff_on_edge[:, 0:1] * mesh_pos_diff_on_edge[:, 1:2]*weight_node_to_node,
+            weight_cell_to_cell,
+            mesh_pos_diff_on_edge*weight_cell_to_cell,
+            0.5 * (mesh_pos_diff_on_edge**2)*weight_cell_to_cell,
+            mesh_pos_diff_on_edge[:, 0:1] * mesh_pos_diff_on_edge[:, 1:2]*weight_cell_to_cell,
         ),
         dim=-1,
     ).unsqueeze(2)
@@ -695,39 +689,39 @@ def Moving_LSQ(
         displacement_T,
     )
 
-    A_node_to_node = scatter_add(
+    A_cell_to_cell = scatter_add(
         left_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
 
     phi_on_edge = (
         (
             (
-                phi_node[outdegree_node_index]*weight_node_to_node
+                phi_node[outdegree_node_index]*weight_cell_to_cell
             ).unsqueeze(1)
         )
         * displacement
     )
 
-    B_phi_node_to_node = scatter_add(
+    B_phi_cell_to_cell = scatter_add(
         phi_on_edge, indegree_node_index, dim=0, dim_size=mesh_pos.shape[0]
     )
 
     """ first method"""
     # nabla_phi_node_lst = torch.linalg.lstsq(
-    #     A_node_to_node_x, B_phi_node_to_node_x
+    #     A_cell_to_cell_x, B_phi_cell_to_cell_x
     # ).solution
 
     """ second method"""
-    # nabla_phi_node_lst = torch.matmul(A_inv_node_to_node_x,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(A_inv_cell_to_cell_x,B_phi_cell_to_cell_x)
 
     """ third method"""
     nabla_phi_node_lst = torch.linalg.solve(
-        A_node_to_node, B_phi_node_to_node
+        A_cell_to_cell, B_phi_cell_to_cell
     ).transpose(1, 2)
     # [N,C,[ux, uy, uxx, uyy, uxy]]
     
     """ fourth method"""
-    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_node_to_node_x)
+    # nabla_phi_node_lst = torch.matmul(R_inv_Q_t,B_phi_cell_to_cell_x)
     
     return nabla_phi_node_lst[:,:,1:]
 
