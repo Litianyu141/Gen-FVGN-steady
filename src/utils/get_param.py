@@ -41,7 +41,7 @@ def params(load=None):
         parser.add_argument('--dataset_size', default=100, type=int, help='size of dataset (default: 1000)')
         parser.add_argument('--lr', default=5e-5, type=float, help='learning rate of optimizer (default: 0.0001)')
         parser.add_argument('--lr_scheduler', default="fixlr", type=str, help='choose learing rate scheduler (default: coslr)',choices=['coslr','fix'])
-        parser.add_argument('--on_gpu', default=1, type=int, help='set training on which gpu')
+        parser.add_argument('--on_gpu', default=0, type=int, help='set training on which gpu')
 
         # train strategy parameters
         parser.add_argument('--integrator', default="imex", type=str, help='integration scheme (explicit / implicit / imex) (default: imex)',choices=['explicit','implicit','imex'])
